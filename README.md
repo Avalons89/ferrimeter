@@ -159,4 +159,4 @@ Window behavior isn't covered by unit tests. Before a release, check:
 
 ## License
 
-[MIT](LICENSE) © 2026 Michael Florentio
+[MIT](LICENSE) © 2026 [Avalons89](https://github.com/Avalons89)
