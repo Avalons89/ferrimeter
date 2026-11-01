@@ -91,9 +91,15 @@ Download `ferrimeter-linux-x86_64.tar.gz` from the
 ```
 sha256sum -c ferrimeter-linux-x86_64.tar.gz.sha256
 tar -xzf ferrimeter-linux-x86_64.tar.gz
-mkdir -p ~/.local/bin && cp ferrimeter-linux-x86_64/ferrimeter ~/.local/bin/
-cp ferrimeter-linux-x86_64/ferrimeter.desktop ~/.local/share/applications/   # optional: app menu entry
+mkdir -p ~/.local/bin ~/.local/share/applications
+cp ferrimeter-linux-x86_64/ferrimeter ~/.local/bin/
+# optional: an app-menu entry that points at the installed binary
+sed "s|^Exec=.*|Exec=\"$HOME/.local/bin/ferrimeter\"|" ferrimeter-linux-x86_64/ferrimeter.desktop > ~/.local/share/applications/ferrimeter.desktop
 ```
+
+If `~/.local/bin` isn't on your `PATH` (some distributions don't add it, and others
+only after you log in again), run it as `~/.local/bin/ferrimeter` and use that full
+path in status-bar configs.
 
 ### Tray icon
 

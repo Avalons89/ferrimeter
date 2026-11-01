@@ -42,6 +42,29 @@ pub fn lock_path(runtime_dir: Option<std::ffi::OsString>, uid: u32) -> PathBuf {
     }
 }
 
+/// `O_NOFOLLOW` on x86-64 Linux (asm-generic/fcntl.h); avoids a libc dependency.
+const O_NOFOLLOW: i32 = 0o400000;
+
+/// Opens (creating if needed) a lock file safely in a shared directory such
+/// as /tmp: never truncates, never follows a symlink, private to this user.
+pub fn open_lock_file(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).create(true).mode(0o600).custom_flags(O_NOFOLLOW).open(path)
+}
+
+/// The lock file, from the runtime dir when it's usable, else /tmp.
+pub fn acquire_lock_file(runtime_dir: Option<std::ffi::OsString>, uid: u32) -> Result<(File, PathBuf), String> {
+    let preferred = lock_path(runtime_dir, uid);
+    let fallback = lock_path(None, uid);
+    match open_lock_file(&preferred) {
+        Ok(f) => Ok((f, preferred)),
+        Err(_) if preferred != fallback => open_lock_file(&fallback)
+            .map(|f| (f, fallback.clone()))
+            .map_err(|e| format!("can't create {}: {e}", fallback.display())),
+        Err(e) => Err(format!("can't create {}: {e}", preferred.display())),
+    }
+}
+
 /// Real user id from /proc (avoids a libc dependency); 0 if unreadable.
 fn current_uid() -> u32 {
     std::fs::read_to_string("/proc/self/status")
@@ -159,11 +182,10 @@ impl ksni::Tray for FerriTray {
 
 /// Runs the tray until Exit; returns the process exit code.
 pub fn run() -> i32 {
-    let lock = lock_path(std::env::var_os("XDG_RUNTIME_DIR"), current_uid());
-    let lock_file = match File::create(&lock) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("ferrimeter: can't create {}: {e}", lock.display());
+    let lock_file = match acquire_lock_file(std::env::var_os("XDG_RUNTIME_DIR"), current_uid()) {
+        Ok((f, _)) => f,
+        Err(msg) => {
+            eprintln!("ferrimeter: {msg}");
             return 1;
         }
     };
@@ -238,10 +260,53 @@ mod tests {
 
     #[test]
     fn adapter_entries_lists_auto_first() {
-        let list = [ad("docker0", true, false, false), ad("enp3s0", true, true, false), ad("lo", true, false, true)];
+        // sysfs marks virtual Ethernet (bridges, veth) as filter rows; VPNs are not.
+        let mut docker = ad("docker0", true, false, false);
+        docker.is_filter = true;
+        let list = [docker, ad("enp3s0", true, true, false), ad("lo", true, false, true), ad("wg0", true, false, false)];
         let (labels, selected) = adapter_entries(&list, &Selection::Auto);
-        assert_eq!(labels, ["Auto", "enp3s0", "docker0"]);
+        assert_eq!(labels, ["Auto", "enp3s0", "wg0"]);
         assert_eq!(selected, 0);
+    }
+
+    fn lock_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ferrimeter-lock-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn lock_file_is_private_and_not_truncated() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = lock_dir("private");
+        let existing = dir.join("old.lock");
+        std::fs::write(&existing, "keep").unwrap();
+        drop(open_lock_file(&existing).unwrap());
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "keep");
+        let fresh = dir.join("new.lock");
+        drop(open_lock_file(&fresh).unwrap());
+        assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_refuses_symlink() {
+        let dir = lock_dir("symlink");
+        let target = dir.join("target");
+        std::fs::write(&target, "victim").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("link.lock")).unwrap();
+        assert!(open_lock_file(&dir.join("link.lock")).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "victim");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unusable_runtime_dir_falls_back_to_tmp() {
+        let (file, path) = acquire_lock_file(Some("/nonexistent-ferrimeter-runtime".into()), 4_242_424).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/ferrimeter-4242424.lock"));
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

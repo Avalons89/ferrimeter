@@ -6,6 +6,8 @@ use std::path::Path;
 
 /// `ARPHRD_LOOPBACK` from linux/if_arp.h, as reported in `type`.
 const ARPHRD_LOOPBACK: &str = "772";
+/// `ARPHRD_ETHER`: Ethernet framing, which bridges and veth pairs also use.
+const ARPHRD_ETHER: &str = "1";
 
 fn read_trimmed(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
@@ -26,15 +28,19 @@ pub fn read_adapters_from(sys_root: &Path) -> Result<Vec<AdapterInfo>, String> {
         // Many Wi-Fi and tunnel drivers report "unknown"; trust the carrier then.
         let is_up = operstate == "up"
             || (operstate == "unknown" && read_trimmed(&dir.join("carrier")).as_deref() == Some("1"));
+        // Physical NICs have a backing device; bridges, veth, VPNs and lo don't.
+        let is_hardware = dir.join("device").exists();
+        let link_type = read_trimmed(&dir.join("type")).unwrap_or_default();
         list.push(AdapterInfo {
             guid: name.clone(),
             alias: name,
             description: String::new(),
             is_up,
-            // Physical NICs have a backing device; bridges, veth, VPNs and lo don't.
-            is_hardware: dir.join("device").exists(),
-            is_loopback: read_trimmed(&dir.join("type")).as_deref() == Some(ARPHRD_LOOPBACK),
-            is_filter: false,
+            is_hardware,
+            is_loopback: link_type == ARPHRD_LOOPBACK,
+            // Virtual Ethernet (docker0, br-*, veth*, virbr*) only clutters the
+            // Adapter menu: one per container. VPNs (PPP, tun/wg) stay listed.
+            is_filter: !is_hardware && link_type == ARPHRD_ETHER,
             in_octets: rx,
             out_octets: tx,
         });
@@ -120,6 +126,19 @@ mod tests {
         iface(&root, "docker0", "up", Some("1"), "1", false, Some("1"), Some("1"));
         iface(&root, "wg0", "unknown", Some("1"), "65534", false, Some("1"), Some("1"));
         assert!(read_adapters_from(&root).unwrap().iter().all(|a| !a.is_hardware));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn virtual_ethernet_is_hidden_but_vpns_are_not() {
+        let root = temp_root("menu");
+        iface(&root, "docker0", "up", Some("1"), "1", false, Some("1"), Some("1")); // bridge
+        iface(&root, "veth1a2b", "up", Some("1"), "1", false, Some("1"), Some("1")); // container pair
+        iface(&root, "wg0", "unknown", Some("1"), "65534", false, Some("1"), Some("1")); // WireGuard
+        iface(&root, "ppp0", "unknown", Some("1"), "512", false, Some("1"), Some("1")); // PPP
+        iface(&root, "enp3s0", "up", Some("1"), "1", true, Some("1"), Some("1")); // physical
+        let filtered: Vec<_> = read_adapters_from(&root).unwrap().into_iter().filter(|a| a.is_filter).map(|a| a.guid).collect();
+        assert_eq!(filtered, ["docker0", "veth1a2b"]);
         fs::remove_dir_all(&root).unwrap();
     }
 

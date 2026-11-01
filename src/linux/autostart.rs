@@ -11,15 +11,23 @@ pub fn autostart_dir() -> Option<PathBuf> {
         .map(|d| d.join("autostart"))
 }
 
-/// Quotes a path for `Exec=` per the Desktop Entry spec: inside double
-/// quotes, `"`, `` ` ``, `$` and `\` are escaped with a backslash.
+/// Quotes a path for `Exec=` per the Desktop Entry spec, which applies two
+/// layers: inside double quotes `"`, `` ` ``, `$` and `\` get a backslash, and
+/// then the whole value is a string where each backslash is itself doubled.
+/// So `"` is written `\\"` and `\` is written `\\\\`. `%` starts a field code,
+/// so a literal one is `%%`.
 fn quote_exec(exe: &Path) -> String {
     let mut out = String::from("\"");
     for ch in exe.to_string_lossy().chars() {
-        if matches!(ch, '"' | '`' | '$' | '\\') {
-            out.push('\\');
+        match ch {
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(ch);
+            }
+            '\\' => out.push_str("\\\\\\\\"),
+            '%' => out.push_str("%%"),
+            _ => out.push(ch),
         }
-        out.push(ch);
     }
     out.push('"');
     out
@@ -95,8 +103,20 @@ mod tests {
         let exe = Path::new("/opt/my apps/fer\"ri$meter");
         set(&dir, exe, true).unwrap();
         let text = fs::read_to_string(dir.join(FILE_NAME)).unwrap();
-        assert!(text.contains("Exec=\"/opt/my apps/fer\\\"ri\\$meter\"\n"), "{text}");
+        // Desktop Entry spec: quote-level escape (\" \$) and then string-level
+        // escape of that backslash, so the file holds \\" and \\$.
+        assert!(text.contains("Exec=\"/opt/my apps/fer\\\\\"ri\\\\$meter\"\n"), "{text}");
         assert!(is_enabled(&dir, exe));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exec_escapes_backslash_and_percent() {
+        let dir = temp_dir("escapes");
+        set(&dir, Path::new("/opt/100%/a\\b"), true).unwrap();
+        let text = fs::read_to_string(dir.join(FILE_NAME)).unwrap();
+        // `\` → `\\` (quote level) → `\\\\` (string level); `%` → `%%` (field codes).
+        assert!(text.contains("Exec=\"/opt/100%%/a\\\\\\\\b\"\n"), "{text}");
         let _ = fs::remove_dir_all(&dir);
     }
 
