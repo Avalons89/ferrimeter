@@ -2,6 +2,7 @@
 
 pub mod autostart;
 pub mod bar;
+pub mod icon;
 pub mod sysfs;
 
 use crate::app::App;
