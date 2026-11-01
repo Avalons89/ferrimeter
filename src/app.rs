@@ -34,6 +34,8 @@ pub struct App {
     pub peak: (f64, f64),
     /// Bytes (down, up) moved since start.
     pub totals: (u64, u64),
+    /// The last reading failed (counters unavailable).
+    pub read_failed: bool,
 }
 
 impl App {
@@ -50,6 +52,7 @@ impl App {
             tooltip: format::tooltip("Ferrimeter", None, units),
             peak: (0.0, 0.0),
             totals: (0, 0),
+            read_failed: false,
         }
     }
 
@@ -58,11 +61,13 @@ impl App {
     pub fn tick(&mut self, adapters: Result<Vec<AdapterInfo>, ()>, now: Instant) {
         let label = match adapters {
             Err(()) => {
+                self.read_failed = true;
                 self.prev = None;
                 self.rates = None;
                 "Counters unavailable".to_string()
             }
             Ok(list) => {
+                self.read_failed = false;
                 let selected = select(&list, &self.settings.selection);
                 let cur = Sample { counters: selected.counters, at: now };
                 if let Some(prev) = &self.prev {
