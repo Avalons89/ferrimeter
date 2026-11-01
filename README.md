@@ -2,10 +2,7 @@
 
 A tiny network speed meter for Windows 10/11 and Linux, written in Rust.
 
-```
-↓ 12.4 MB/s
-↑ 512 KB/s
-```
+![Ferrimeter on Windows (dark and light themes) and its Linux tray icons](assets/screenshot.png)
 
 It shows your download and upload speed once per second: on Windows in a small
 always-on-top box you can drag anywhere or dock on the taskbar, on Linux in the
