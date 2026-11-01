@@ -43,7 +43,7 @@ Get-FileHash ferrimeter.exe -Algorithm SHA256
 ```
 
 The result should match `ferrimeter.exe.sha256` on the release page. Releases are
-built from this repository's source by GitHub Actions.
+built from the tagged source in this repository.
 
 You can also [build it yourself](#build).
 
