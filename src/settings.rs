@@ -101,7 +101,9 @@ pub fn load_from(path: &Path) -> Loaded {
             }
         }
     };
-    let settings = match serde_json::from_slice(&bytes) {
+    // Tolerate a UTF-8 byte-order mark, which serde_json rejects.
+    let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let settings = match serde_json::from_slice(json) {
         Ok(s) => s,
         Err(e) => {
             log_error(&format!("settings file invalid ({e}); using defaults"));
@@ -213,6 +215,17 @@ mod tests {
         assert!(fs::read_to_string(dir.join("error.log.old")).unwrap().contains("first"));
         let current = fs::read_to_string(&p).unwrap();
         assert!(current.contains("second") && !current.contains("first"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bom_prefixed_file_loads() {
+        // Windows PowerShell 5.1 and some editors save UTF-8 with a byte-order mark.
+        let dir = temp_dir("bom");
+        let p = dir.join("settings.json");
+        fs::write(&p, b"\xEF\xBB\xBF{\"locked\":true}").unwrap();
+        assert!(load_from(&p).settings.locked);
+        assert!(!dir.join("settings.json.bak").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
