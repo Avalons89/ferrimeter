@@ -109,6 +109,45 @@ fn keyed_to_premultiplied(px: &mut [u32], key: u32) {
     }
 }
 
+fn rects_overlap(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+/// Main and secondary-monitor taskbars. Only these are re-raised over: other
+/// topmost windows (menus, tooltips, other overlays) are never fought.
+fn is_taskbar_class(name: &str) -> bool {
+    matches!(name, "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
+}
+
+/// True when a visible taskbar sits above us in z-order and overlaps us. The
+/// taskbar rises over every always-on-top window when clicked or activated,
+/// and our WS_EX_TOPMOST flag stays set, so the flag alone can't detect it.
+unsafe fn covered_by_taskbar(hwnd: HWND) -> bool {
+    let mut me = RECT::default();
+    if GetWindowRect(hwnd, &mut me).is_err() {
+        return false;
+    }
+    let mut next = GetWindow(hwnd, GW_HWNDPREV);
+    // Only topmost windows can be above a topmost window, so this walk is short;
+    // the cap just guards against a z-order that changes mid-walk.
+    for _ in 0..1024 {
+        let Ok(above) = next else { break };
+        if above.is_invalid() {
+            break;
+        }
+        let mut buf = [0u16; 64];
+        let len = GetClassNameW(above, &mut buf).max(0) as usize;
+        if IsWindowVisible(above).as_bool() && is_taskbar_class(&String::from_utf16_lossy(&buf[..len])) {
+            let mut r = RECT::default();
+            if GetWindowRect(above, &mut r).is_ok() && rects_overlap(&me, &r) {
+                return true;
+            }
+        }
+        next = GetWindow(above, GW_HWNDPREV);
+    }
+    false
+}
+
 thread_local! {
     /// Which layered mode the window is in: Some(true) = per-pixel alpha
     /// (Transparent theme), Some(false) = whole-window alpha.
@@ -216,11 +255,12 @@ fn tick(hwnd: HWND) {
         tray::set_tooltip(hwnd, &tip);
     }
     unsafe {
-        // Windows refuses topmost while a full-screen app has focus, and other
-        // apps can push us down; re-assert so "always on top" recovers.
+        // Windows refuses topmost while a full-screen app has focus, and the
+        // taskbar rises over us when clicked; re-assert so "always on top"
+        // recovers within a second either way.
         let want_top = with_app(hwnd, |a| a.settings.always_on_top).unwrap_or(false);
         let is_top = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0;
-        if want_top && !is_top {
+        if want_top && (!is_top || covered_by_taskbar(hwnd)) {
             let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
@@ -471,6 +511,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlap_requires_shared_area() {
+        let widget = RECT { left: 1556, top: 1030, right: 1653, bottom: 1076 };
+        let taskbar = RECT { left: 0, top: 1032, right: 1920, bottom: 1080 };
+        assert!(rects_overlap(&widget, &taskbar));
+        let above = RECT { left: 1556, top: 978, right: 1653, bottom: 1032 }; // touches the edge only
+        assert!(!rects_overlap(&above, &taskbar));
+    }
+
+    #[test]
+    fn only_taskbar_windows_count() {
+        assert!(is_taskbar_class("Shell_TrayWnd"));
+        assert!(is_taskbar_class("Shell_SecondaryTrayWnd")); // taskbar on other monitors
+        assert!(!is_taskbar_class("#32768")); // menus must never be fought
+        assert!(!is_taskbar_class("Chrome_WidgetWin_1"));
+    }
 
     #[test]
     fn key_pixels_become_nearly_transparent_and_rest_opaque() {
