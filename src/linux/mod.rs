@@ -1,5 +1,6 @@
 //! Linux app: tray icon and --bar output.
 
+pub mod autostart;
 pub mod sysfs;
 
 /// Entry point; returns the process exit code.
