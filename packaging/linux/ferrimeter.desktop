@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ferrimeter
+Comment=Network speed in the system tray
+Exec=ferrimeter
+Icon=network-transmit-receive
+Categories=Network;Monitor;
+Terminal=false

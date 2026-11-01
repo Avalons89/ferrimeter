@@ -1,6 +1,6 @@
 [package]
 name = "ferrimeter"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Tiny always-on-top network speed widget for Windows. Makes no network connections."
 license = "MIT"

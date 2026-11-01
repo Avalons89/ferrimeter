@@ -1,0 +1,2 @@
+# Linux desktop entries must use LF line endings on every checkout.
+packaging/linux/*.desktop text eol=lf
