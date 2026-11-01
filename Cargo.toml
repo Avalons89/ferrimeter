@@ -3,6 +3,10 @@ name = "netspeed"
 version = "0.1.0"
 edition = "2021"
 description = "Tiny always-on-top network speed widget for Windows. Makes no network connections."
+license = "MIT"
+repository = "https://github.com/Avalons89/netspeed-rs"
+readme = "README.md"
+keywords = ["network", "speed", "widget", "windows", "tray"]
 publish = false
 
 [dependencies]
