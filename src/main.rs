@@ -3,6 +3,7 @@
 mod app;
 mod autostart;
 mod counters;
+mod dock;
 mod format;
 mod settings;
 mod tray;

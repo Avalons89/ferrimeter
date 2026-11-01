@@ -15,6 +15,7 @@ pub enum MenuCommand {
     SetTextSize(TextSize),
     ToggleAlwaysOnTop,
     ToggleLocked,
+    ToggleDock,
     ToggleVisible,
     ToggleAutostart,
     ResetPosition,
@@ -102,6 +103,7 @@ impl App {
             MenuCommand::SetTextSize(t) => s.text_size = *t,
             MenuCommand::ToggleAlwaysOnTop => s.always_on_top = !s.always_on_top,
             MenuCommand::ToggleLocked => s.locked = !s.locked,
+            MenuCommand::ToggleDock => s.docked = !s.docked,
             MenuCommand::ToggleVisible => s.visible = !s.visible,
             MenuCommand::ResetPosition => s.position = None,
             MenuCommand::ToggleAutostart | MenuCommand::Exit => return false,
@@ -191,6 +193,9 @@ mod tests {
         a.settings.position = Some((1, 2));
         assert!(a.apply(&MenuCommand::ResetPosition));
         assert_eq!(a.settings.position, None);
+        assert!(!a.settings.docked);
+        assert!(a.apply(&MenuCommand::ToggleDock));
+        assert!(a.settings.docked);
         assert!(!a.apply(&MenuCommand::ToggleAutostart));
         assert!(!a.apply(&MenuCommand::Exit));
     }

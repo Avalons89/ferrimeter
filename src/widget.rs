@@ -8,7 +8,7 @@ use crate::app::{App, MenuCommand};
 use crate::counters::read_adapters;
 use crate::format;
 use crate::settings::{log_error, Settings, TextSize, Theme};
-use crate::{autostart, tray};
+use crate::{autostart, dock, tray};
 use std::time::Instant;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -42,11 +42,34 @@ struct Palette {
 
 fn palette(theme: Theme) -> Palette {
     match theme {
-        Theme::Dark => Palette { bg: rgb(0x20, 0x20, 0x20), down: rgb(0x4C, 0xD9, 0x64), up: rgb(0xFF, 0x9F, 0x43) },
+        Theme::Dark | Theme::System => Palette { bg: rgb(0x20, 0x20, 0x20), down: rgb(0x4C, 0xD9, 0x64), up: rgb(0xFF, 0x9F, 0x43) },
         Theme::Light => Palette { bg: rgb(0xF3, 0xF3, 0xF3), down: rgb(0x1E, 0x8E, 0x3E), up: rgb(0xC2, 0x5E, 0x00) },
         Theme::Transparent => Palette { bg: COLOR_KEY, down: rgb(0x4C, 0xD9, 0x64), up: rgb(0xFF, 0x9F, 0x43) },
     }
 }
+
+/// The taskbar's light/dark setting, which "Follow Windows" mirrors.
+fn system_uses_light_theme() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: value/size describe a valid u32 buffer.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut value as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    status.is_ok() && value != 0
+}
+
+/// Gap between a docked widget and the tray icons.
+const DOCK_MARGIN: i32 = 4;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
@@ -174,7 +197,8 @@ pub fn sync(hwnd: HWND, s: &Settings) {
     unsafe {
         let dpi = GetDpiForWindow(hwnd).max(96);
         let (w, h, _) = measure(hwnd, s);
-        let (mut x, mut y) = s.position.unwrap_or_else(|| default_position(w, h, dpi));
+        let docked_at = if s.docked { dock::current_target(w, h, scale(DOCK_MARGIN, dpi)) } else { None };
+        let (mut x, mut y) = docked_at.or(s.position).unwrap_or_else(|| default_position(w, h, dpi));
         let rect = RECT { left: x, top: y, right: x + w, bottom: y + h };
         if MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid() {
             (x, y) = default_position(w, h, dpi);
@@ -191,7 +215,8 @@ pub fn sync(hwnd: HWND, s: &Settings) {
         if !per_pixel {
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
         }
-        let z = if s.always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        // A docked widget must stay on top, or the taskbar would hide it.
+        let z = if s.always_on_top || s.docked { HWND_TOPMOST } else { HWND_NOTOPMOST };
         let _ = SetWindowPos(hwnd, Some(z), x, y, w, h, SWP_NOACTIVATE);
         let _ = ShowWindow(hwnd, if s.visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
         redraw(hwnd);
@@ -245,6 +270,21 @@ pub fn create(app: App) -> windows::core::Result<HWND> {
     }
 }
 
+/// Keeps a docked widget next to the tray as the taskbar moves, resizes or
+/// gains tray icons.
+fn follow_taskbar(hwnd: HWND) {
+    unsafe {
+        let Some(s) = snapshot(hwnd) else { return };
+        let (w, h, _) = measure(hwnd, &s);
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let Some((x, y)) = dock::current_target(w, h, scale(DOCK_MARGIN, dpi)) else { return };
+        let mut r = RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_ok() && (r.left, r.top) != (x, y) {
+            let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
 fn tick(hwnd: HWND) {
     let adapters = read_adapters().map_err(|e| log_error(&format!("GetIfTable2 failed: {e}")));
     let tip = with_app(hwnd, |a| {
@@ -258,7 +298,10 @@ fn tick(hwnd: HWND) {
         // Windows refuses topmost while a full-screen app has focus, and the
         // taskbar rises over us when clicked; re-assert so "always on top"
         // recovers within a second either way.
-        let want_top = with_app(hwnd, |a| a.settings.always_on_top).unwrap_or(false);
+        let (want_top, docked) = with_app(hwnd, |a| (a.settings.always_on_top || a.settings.docked, a.settings.docked)).unwrap_or((false, false));
+        if docked {
+            follow_taskbar(hwnd);
+        }
         let is_top = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0;
         if want_top && (!is_top || covered_by_taskbar(hwnd)) {
             let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -316,7 +359,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, w: i32, h: i32, f: &Frame) {
     let s = &f.settings;
     let dpi = GetDpiForWindow(hwnd).max(96);
     let (_, _, line) = measure(hwnd, s);
-    let pal = palette(s.theme);
+    let pal = palette(s.theme.resolve(system_uses_light_theme()));
 
     let brush = CreateSolidBrush(pal.bg);
     FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: h }, brush);
@@ -419,7 +462,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // Clicking the widget must not steal focus from the user's window.
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_NCHITTEST => {
-                let locked = with_app(hwnd, |a| a.settings.locked).unwrap_or(false);
+                let locked = with_app(hwnd, |a| a.settings.locked || a.settings.docked).unwrap_or(false);
                 LRESULT(if locked { HTCLIENT } else { HTCAPTION } as isize)
             }
             // Caption double-click would try to maximize; a caption right-click
@@ -461,6 +504,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(s) = snapshot(hwnd) {
                     sync(hwnd, &s);
                 }
+                LRESULT(0)
+            }
+            // Windows light/dark switch: redraw so "Follow Windows" updates at once.
+            WM_SETTINGCHANGE if lparam.0 != 0 && PCWSTR(lparam.0 as *const u16).to_string().is_ok_and(|v| v == "ImmersiveColorSet") => {
+                redraw(hwnd);
                 LRESULT(0)
             }
             WM_DISPLAYCHANGE => {

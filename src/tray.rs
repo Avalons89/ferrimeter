@@ -193,6 +193,8 @@ pub fn command_for_id(id: u32, adapter_guids: &[String]) -> Option<MenuCommand> 
         9 => SetTextSize(TextSize::Large),
         10 => ToggleAlwaysOnTop,
         11 => ToggleLocked,
+        16 => ToggleDock,
+        17 => SetTheme(Theme::System),
         12 => ToggleVisible,
         13 => ToggleAutostart,
         14 => ResetPosition,
@@ -244,6 +246,7 @@ pub fn show_menu(hwnd: HWND, s: &Settings, anchor: Option<(i32, i32)>) -> Option
 
         submenu(menu, "Units", &[(2, "Bytes/s", s.units == Units::Bytes), (3, "Bits/s", s.units == Units::Bits)]);
         submenu(menu, "Theme", &[
+            (17, "Follow Windows", s.theme == Theme::System),
             (4, "Dark", s.theme == Theme::Dark),
             (5, "Light", s.theme == Theme::Light),
             (6, "Transparent", s.theme == Theme::Transparent),
@@ -255,6 +258,7 @@ pub fn show_menu(hwnd: HWND, s: &Settings, anchor: Option<(i32, i32)>) -> Option
         ]);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         item(menu, 10, "Always on top", s.always_on_top);
+        item(menu, 16, "Dock on taskbar", s.docked);
         item(menu, 11, "Lock position", s.locked);
         item(menu, 12, "Show widget", s.visible);
         item(menu, 13, "Start with Windows", autostart_on);
@@ -309,6 +313,8 @@ mod tests {
         assert_eq!(command_for_id(3, &g), Some(MenuCommand::SetUnits(Units::Bits)));
         assert_eq!(command_for_id(6, &g), Some(MenuCommand::SetTheme(Theme::Transparent)));
         assert_eq!(command_for_id(15, &g), Some(MenuCommand::Exit));
+        assert_eq!(command_for_id(16, &g), Some(MenuCommand::ToggleDock));
+        assert_eq!(command_for_id(17, &g), Some(MenuCommand::SetTheme(Theme::System)));
         assert_eq!(command_for_id(0, &g), None);
     }
 }

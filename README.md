@@ -17,10 +17,11 @@ install, using about 1 MB of RAM and effectively no CPU.
 
 - Live download/upload speed, updated every second
 - Floating, borderless, always-on-top widget; drag it anywhere, or lock it in place
-- Tray icon with the current speeds in its tooltip
+- **Dock on taskbar**: sits right next to the tray icons and follows the taskbar
+- Tray icon whose tooltip shows current speeds, the session's peak, and total data moved
 - **Auto** mode adds up all connected network adapters, or pick one specific adapter
 - Bytes per second (KB/s, MB/s) or bits per second (Kbps, Mbps)
-- Dark, Light and Transparent themes; three text sizes
+- Follow Windows (matches the taskbar's light/dark setting), Dark, Light and Transparent themes; three text sizes
 - Sharp text at any display scaling, including mixed-DPI multi-monitor setups
 - Optional start with Windows
 - Settings and position remembered between runs
@@ -56,9 +57,10 @@ You can also [build it yourself](#build).
   |---|---|
   | Adapter | Auto, or one specific adapter |
   | Units | Bytes/s or Bits/s |
-  | Theme | Dark, Light, Transparent |
+  | Theme | Follow Windows, Dark, Light, Transparent |
   | Text size | Small, Medium, Large |
   | Always on top | Keep the widget above other windows |
+  | Dock on taskbar | Sit on the taskbar next to the tray icons (can't be dragged while docked) |
   | Lock position | Stop the widget from being dragged |
   | Show widget | Hide or show the widget (the tray icon stays) |
   | Start with Windows | Launch automatically when you sign in |
@@ -156,6 +158,9 @@ Window behavior isn't covered by unit tests. Before a release, check:
 10. Resource Monitor shows no network connections for ferrimeter.exe.
 11. With two monitors at different scaling, dragging across works and the widget stays where dropped.
 12. Right-clicking the tray icon opens exactly one menu, at the icon.
+13. Docked: the widget sits just left of the tray icons, comes back above the taskbar
+    within a second after clicking the taskbar, and follows when tray icons are added.
+14. Follow Windows: switching Windows between light and dark mode recolors the widget.
 
 ## License
 

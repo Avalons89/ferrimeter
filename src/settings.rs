@@ -9,10 +9,23 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Theme {
-    #[default]
     Dark,
     Light,
     Transparent,
+    /// Matches the taskbar's light/dark setting and follows it when it changes.
+    #[default]
+    System,
+}
+
+impl Theme {
+    /// The theme actually drawn: `System` becomes Light or Dark.
+    pub fn resolve(self, system_uses_light: bool) -> Theme {
+        match self {
+            Theme::System if system_uses_light => Theme::Light,
+            Theme::System => Theme::Dark,
+            other => other,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -36,6 +49,8 @@ pub struct Settings {
     pub visible: bool,
     /// Widget top-left in screen pixels; `None` means the default spot.
     pub position: Option<(i32, i32)>,
+    /// Sit on the taskbar next to the tray icons instead of at `position`.
+    pub docked: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +65,7 @@ impl Default for Settings {
             locked: false,
             visible: true,
             position: None,
+            docked: false,
         }
     }
 }
@@ -227,6 +243,16 @@ mod tests {
         assert!(load_from(&p).settings.locked);
         assert!(!dir.join("settings.json.bak").exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn theme_follows_windows_by_default() {
+        assert_eq!(Settings::default().theme, Theme::System);
+        assert_eq!(Theme::System.resolve(true), Theme::Light);
+        assert_eq!(Theme::System.resolve(false), Theme::Dark);
+        // Explicit choices are never overridden.
+        assert_eq!(Theme::Dark.resolve(true), Theme::Dark);
+        assert_eq!(Theme::Transparent.resolve(true), Theme::Transparent);
     }
 
     #[test]
