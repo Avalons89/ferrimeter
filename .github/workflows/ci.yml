@@ -15,3 +15,16 @@ jobs:
         run: cargo test --locked
       - name: Build
         run: cargo build --release --locked
+
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get install -y musl-tools
+      - name: Test
+        run: cargo test --locked
+      - name: Build (static)
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl

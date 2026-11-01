@@ -70,8 +70,23 @@ impl Default for Settings {
     }
 }
 
+/// `%APPDATA%\ferrimeter` on Windows; `$XDG_CONFIG_HOME/ferrimeter` (or
+/// `~/.config/ferrimeter`) on Linux.
 pub fn app_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("ferrimeter"))
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(target_os = "linux")]
+    let base = config_dir_from(std::env::var_os("XDG_CONFIG_HOME"), std::env::var_os("HOME"));
+    base.map(|d| d.join("ferrimeter"))
+}
+
+/// The XDG config base: `XDG_CONFIG_HOME` when it's an absolute path (the
+/// spec says to ignore empty or relative values), else `$HOME/.config`.
+#[cfg(target_os = "linux")]
+pub fn config_dir_from(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
 }
 
 pub fn settings_path() -> Option<PathBuf> {
@@ -191,6 +206,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn locked_file_is_not_overwritten() {
         use std::os::windows::fs::OpenOptionsExt;
@@ -243,6 +259,26 @@ mod tests {
         assert!(load_from(&p).settings.locked);
         assert!(!dir.join("settings.json.bak").exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn config_dir_prefers_absolute_xdg() {
+        assert_eq!(config_dir_from(Some("/x/cfg".into()), Some("/home/u".into())), Some(PathBuf::from("/x/cfg")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn config_dir_ignores_empty_or_relative_xdg() {
+        let home = PathBuf::from("/home/u/.config");
+        assert_eq!(config_dir_from(Some("".into()), Some("/home/u".into())), Some(home.clone()));
+        assert_eq!(config_dir_from(Some("rel/dir".into()), Some("/home/u".into())), Some(home));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn config_dir_none_without_home() {
+        assert_eq!(config_dir_from(None, None), None);
     }
 
     #[test]

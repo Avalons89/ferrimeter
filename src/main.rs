@@ -1,52 +1,18 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
-mod autostart;
 mod counters;
-mod dock;
 mod format;
 mod settings;
-mod tray;
-mod widget;
 
-use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPARAM};
-use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetMessageW, PostMessageW, TranslateMessage, MSG,
-};
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(windows)]
+mod win;
 
 fn main() {
-    std::panic::set_hook(Box::new(|info| settings::log_error(&format!("panic: {info}"))));
-
-    // Held for the life of the process; a second launch sees it and hands off.
-    let _instance = unsafe { CreateMutexW(None, true, w!("Local\\ferrimeter-singleton")) };
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        if let Ok(existing) = unsafe { FindWindowW(widget::CLASS_NAME, PCWSTR::null()) } {
-            let _ = unsafe { PostMessageW(Some(existing), widget::WM_APP_SHOW, WPARAM(0), LPARAM(0)) };
-        }
-        return;
-    }
-
-    let path = settings::settings_path();
-    let (loaded, path) = match path {
-        Some(p) => {
-            let l = settings::load_from(&p);
-            // Never save over a settings file we couldn't read.
-            (l.settings, Some(p).filter(|_| l.can_save))
-        }
-        None => (settings::Settings::default(), None),
-    };
-    if let Err(e) = widget::create(app::App::new(loaded, path)) {
-        settings::log_error(&format!("creating widget failed: {e}"));
-        return;
-    }
-
-    let mut msg = MSG::default();
-    unsafe {
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    #[cfg(windows)]
+    win::run();
+    #[cfg(target_os = "linux")]
+    std::process::exit(linux::run());
 }
