@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod bar;
 pub mod icon;
 pub mod sysfs;
+pub mod tray;
 
 use crate::app::App;
 use crate::counters::Selection;
@@ -35,9 +36,6 @@ pub fn run() -> i32 {
             let mut out = std::io::stdout().lock();
             bar::run_loop(&mut out, &mut app, a.json, || sysfs::read_adapters().map_err(|_| ()), None)
         }
-        Ok(Command::Tray) => {
-            eprintln!("ferrimeter: tray mode is not ready yet; use --bar");
-            1
-        }
+        Ok(Command::Tray) => tray::run(),
     }
 }
