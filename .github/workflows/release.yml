@@ -22,7 +22,8 @@ jobs:
         run: |
           Copy-Item target/release/ferrimeter.exe ferrimeter.exe
           $hash = (Get-FileHash ferrimeter.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  ferrimeter.exe" | Out-File -Encoding ascii ferrimeter.exe.sha256
+          # LF line ending so `sha256sum -c` works on Linux/macOS/Git Bash too.
+          [IO.File]::WriteAllText("$PWD/ferrimeter.exe.sha256", "$hash  ferrimeter.exe`n")
       - name: Publish release
         shell: pwsh
         env:
