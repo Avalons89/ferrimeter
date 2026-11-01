@@ -27,8 +27,25 @@ install, using about 1 MB of RAM and effectively no CPU.
 
 ## Install
 
-There are no prebuilt downloads yet; build it from source (see [Build](#build)) and copy
-`target\release\ferrimeter.exe` wherever you like. Nothing else needs to be installed.
+1. Download `ferrimeter.exe` from the [latest release](https://github.com/Avalons89/ferrimeter/releases/latest).
+2. Put it somewhere permanent, for example `%LOCALAPPDATA%\Programs\Ferrimeter\`.
+3. Run it. To have it start automatically, right-click the widget and turn on
+   **Start with Windows**.
+
+Nothing else needs to be installed. To update, exit Ferrimeter and replace the file.
+
+The exe isn't code-signed yet, so Windows SmartScreen may say "Windows protected
+your PC" the first time. Click **More info → Run anyway**. You can check the file
+against the published checksum first:
+
+```
+Get-FileHash ferrimeter.exe -Algorithm SHA256
+```
+
+The result should match `ferrimeter.exe.sha256` on the release page. Releases are
+built from this repository's source by GitHub Actions.
+
+You can also [build it yourself](#build).
 
 ## Use
 
@@ -50,9 +67,6 @@ There are no prebuilt downloads yet; build it from source (see [Build](#build)) 
 
 - **Hide or show:** double-click the tray icon.
 - Starting it again while it's already running just brings the widget back.
-
-In the Transparent theme only the text itself responds to the mouse; use the tray
-icon's menu to change settings.
 
 Windows doesn't let any window stay above a full-screen app (such as a game) while
 that app has focus. The widget re-applies "always on top" every second, so it comes
