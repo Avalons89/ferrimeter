@@ -29,6 +29,10 @@ pub struct App {
     pub down: String,
     pub up: String,
     pub tooltip: String,
+    /// Highest (down, up) bytes/s seen since start.
+    pub peak: (f64, f64),
+    /// Bytes (down, up) moved since start.
+    pub totals: (u64, u64),
 }
 
 impl App {
@@ -43,6 +47,8 @@ impl App {
             down,
             up,
             tooltip: format::tooltip("Ferrimeter", None, units),
+            peak: (0.0, 0.0),
+            totals: (0, 0),
         }
     }
 
@@ -60,7 +66,13 @@ impl App {
                 let cur = Sample { counters: selected.counters, at: now };
                 if let Some(prev) = &self.prev {
                     match compute_rates(prev, &cur) {
-                        Some(r) => self.rates = Some(r),
+                        Some(r) => {
+                            let secs = now.saturating_duration_since(prev.at).as_secs_f64();
+                            self.rates = Some(r);
+                            self.peak = (self.peak.0.max(r.0), self.peak.1.max(r.1));
+                            self.totals.0 += (r.0 * secs).round() as u64;
+                            self.totals.1 += (r.1 * secs).round() as u64;
+                        }
                         None => return, // too soon after the last reading; keep it
                     }
                 }
@@ -70,7 +82,11 @@ impl App {
         };
         let units = self.settings.units;
         (self.down, self.up) = format::widget_lines(self.rates, units);
-        self.tooltip = format::tooltip(&label, self.rates, units);
+        self.tooltip = if self.peak == (0.0, 0.0) && self.totals == (0, 0) {
+            format::tooltip(&label, self.rates, units)
+        } else {
+            format::tooltip_with_session(&label, self.rates, self.peak, self.totals, units)
+        };
     }
 
     /// Applies a settings change. Returns `true` when settings changed (the
@@ -131,7 +147,24 @@ mod tests {
         assert_eq!(a.down, "↓ —");
         a.tick(Ok(vec![ad("a", 1000 + 2048, 0)]), t + Duration::from_secs(1));
         assert_eq!(a.down, "↓ 2.0 KB/s");
-        assert_eq!(a.tooltip, "Auto\n↓ 2.0 KB/s  ↑ 0 B/s");
+        assert_eq!(
+            a.tooltip,
+            "Auto\n↓ 2.0 KB/s  ↑ 0 B/s\nPeak ↓ 2.0 KB/s  ↑ 0 B/s\nTotal ↓ 2.0 KB  ↑ 0 B"
+        );
+    }
+
+    #[test]
+    fn session_peak_and_totals_accumulate() {
+        let mut a = App::new(Settings::default(), None);
+        let t = Instant::now();
+        a.tick(Ok(vec![ad("a", 0, 0)]), t);
+        a.tick(Ok(vec![ad("a", 4096, 100)]), t + Duration::from_secs(1)); // 4 KB/s down
+        a.tick(Ok(vec![ad("a", 5120, 300)]), t + Duration::from_secs(2)); // 1 KB/s down
+        assert_eq!(a.peak, (4096.0, 200.0));
+        assert_eq!(a.totals, (5120, 300));
+        // A failed read keeps the session numbers.
+        a.tick(Err(()), t + Duration::from_secs(3));
+        assert_eq!(a.totals, (5120, 300));
     }
 
     #[test]
