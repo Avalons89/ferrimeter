@@ -46,6 +46,8 @@ pub struct AdapterCounter {
 
 pub struct Selected {
     pub counters: Vec<AdapterCounter>,
+    /// The UI shows `label`; `state` is the machine-readable form, checked by tests.
+    #[allow(dead_code)]
     pub state: SelectionState,
     pub label: String,
 }
