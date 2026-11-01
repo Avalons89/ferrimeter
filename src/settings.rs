@@ -51,6 +51,10 @@ pub struct Settings {
     pub position: Option<(i32, i32)>,
     /// Sit on the taskbar next to the tray icons instead of at `position`.
     pub docked: bool,
+    /// Monthly data cap in GB (1000-based, as providers bill); 0 = no cap.
+    pub cap_gb: u32,
+    /// Day of the month (1-28) the billing period starts on.
+    pub billing_day: u32,
 }
 
 impl Default for Settings {
@@ -66,6 +70,8 @@ impl Default for Settings {
             visible: true,
             position: None,
             docked: false,
+            cap_gb: 0,
+            billing_day: 1,
         }
     }
 }
@@ -115,16 +121,23 @@ pub struct Loaded {
 /// Missing file → defaults. Invalid file → kept as `<name>.bak`, defaults.
 /// File that exists but stays unreadable → defaults, and `can_save` is false.
 pub fn load_from(path: &Path) -> Loaded {
+    let (settings, can_save) = load_json(path);
+    Loaded { settings, can_save }
+}
+
+/// Reads a JSON file into `T` with the same safety rules as settings: a
+/// missing file gives the default; an invalid one is kept as `<name>.bak`;
+/// one that exists but stays unreadable (e.g. locked by antivirus) gives the
+/// default with `false`, meaning "don't save over it".
+pub fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> (T, bool) {
     let mut attempt = 1;
     let bytes = loop {
         match fs::read(path) {
             Ok(bytes) => break bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Loaded { settings: Settings::default(), can_save: true };
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (T::default(), true),
             Err(e) if attempt >= READ_ATTEMPTS => {
-                log_error(&format!("settings file unreadable ({e}); using defaults without saving"));
-                return Loaded { settings: Settings::default(), can_save: false };
+                log_error(&format!("{} unreadable ({e}); using defaults without saving", path.display()));
+                return (T::default(), false);
             }
             Err(_) => {
                 attempt += 1;
@@ -134,25 +147,29 @@ pub fn load_from(path: &Path) -> Loaded {
     };
     // Tolerate a UTF-8 byte-order mark, which serde_json rejects.
     let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-    let settings = match serde_json::from_slice(json) {
-        Ok(s) => s,
+    match serde_json::from_slice(json) {
+        Ok(v) => (v, true),
         Err(e) => {
-            log_error(&format!("settings file invalid ({e}); using defaults"));
+            log_error(&format!("{} invalid ({e}); using defaults", path.display()));
             let _ = fs::rename(path, sibling(path, ".bak"));
-            Settings::default()
+            (T::default(), true)
         }
-    };
-    Loaded { settings, can_save: true }
+    }
 }
 
 /// Writes to a temp file then renames over the target, so a crash mid-write
 /// can't leave a half-written settings file (`fs::rename` replaces atomically on Windows).
 pub fn save_to(path: &Path, s: &Settings) -> std::io::Result<()> {
+    save_json(path, s)
+}
+
+/// Atomic JSON write (temp file + rename).
+pub fn save_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = sibling(path, ".tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
     fs::rename(&tmp, path)
 }
 

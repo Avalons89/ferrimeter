@@ -5,6 +5,7 @@ use crate::counters::{menu_adapters, AdapterInfo, Selection};
 use crate::format::Units;
 use crate::linux::{autostart, icon, sysfs};
 use crate::settings::{load_from, log_error, settings_path};
+use crate::usage;
 use ksni::blocking::TrayMethods;
 use std::fs::File;
 use std::path::PathBuf;
@@ -33,12 +34,26 @@ pub fn icon_texts(app: &App) -> (String, String) {
     }
 }
 
-/// Lock file for "only one tray at a time": `$XDG_RUNTIME_DIR/ferrimeter.lock`,
-/// or `/tmp/ferrimeter-<uid>.lock` when that isn't set.
-pub fn lock_path(runtime_dir: Option<std::ffi::OsString>, uid: u32) -> PathBuf {
+/// Held by the one tray per user.
+pub const TRAY_LOCK: &str = "ferrimeter";
+/// Held by the one process per user that counts data usage (tray or bar).
+pub const USAGE_LOCK: &str = "ferrimeter-usage";
+
+/// Lock file `$XDG_RUNTIME_DIR/<name>.lock`, or `/tmp/<name>-<uid>.lock` when
+/// that isn't set.
+pub fn lock_path(runtime_dir: Option<std::ffi::OsString>, uid: u32, name: &str) -> PathBuf {
     match runtime_dir.filter(|d| !d.is_empty()) {
-        Some(d) => PathBuf::from(d).join("ferrimeter.lock"),
-        None => PathBuf::from(format!("/tmp/ferrimeter-{uid}.lock")),
+        Some(d) => PathBuf::from(d).join(format!("{name}.lock")),
+        None => PathBuf::from(format!("/tmp/{name}-{uid}.lock")),
+    }
+}
+
+/// Tries to become the process that counts data usage. Keep the returned file
+/// alive for as long as this process counts; `false` means another one does.
+pub fn claim_counter() -> (Option<File>, bool) {
+    match acquire_lock_file(std::env::var_os("XDG_RUNTIME_DIR"), current_uid(), USAGE_LOCK) {
+        Ok((file, _)) if file.try_lock().is_ok() => (Some(file), true),
+        _ => (None, false),
     }
 }
 
@@ -53,9 +68,9 @@ pub fn open_lock_file(path: &std::path::Path) -> std::io::Result<File> {
 }
 
 /// The lock file, from the runtime dir when it's usable, else /tmp.
-pub fn acquire_lock_file(runtime_dir: Option<std::ffi::OsString>, uid: u32) -> Result<(File, PathBuf), String> {
-    let preferred = lock_path(runtime_dir, uid);
-    let fallback = lock_path(None, uid);
+pub fn acquire_lock_file(runtime_dir: Option<std::ffi::OsString>, uid: u32, name: &str) -> Result<(File, PathBuf), String> {
+    let preferred = lock_path(runtime_dir, uid, name);
+    let fallback = lock_path(None, uid, name);
     match open_lock_file(&preferred) {
         Ok(f) => Ok((f, preferred)),
         Err(_) if preferred != fallback => open_lock_file(&fallback)
@@ -161,6 +176,31 @@ impl ksni::Tray for FerriTray {
                 ..Default::default()
             }
             .into(),
+            SubMenu {
+                label: "Data cap".into(),
+                submenu: vec![RadioGroup {
+                    selected: usage::CAP_PRESETS_GB.iter().position(|&gb| gb == self.app.settings.cap_gb).unwrap_or(0),
+                    select: Box::new(|t: &mut Self, i| t.apply(MenuCommand::SetCap(usage::CAP_PRESETS_GB[i]))),
+                    options: usage::CAP_PRESETS_GB
+                        .iter()
+                        .map(|&gb| RadioItem { label: usage::cap_label(gb), ..Default::default() })
+                        .collect(),
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Billing day".into(),
+                submenu: vec![RadioGroup {
+                    selected: (self.app.settings.billing_day.clamp(1, 28) - 1) as usize,
+                    select: Box::new(|t: &mut Self, i| t.apply(MenuCommand::SetBillingDay(i as u32 + 1))),
+                    options: (1..=28).map(|d| RadioItem { label: d.to_string(), ..Default::default() }).collect(),
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
             CheckmarkItem {
                 label: "Start at login".into(),
                 checked: autostart_on,
@@ -171,8 +211,11 @@ impl ksni::Tray for FerriTray {
             MenuItem::Separator,
             StandardItem {
                 label: "Exit".into(),
-                // Settings are saved on every change, so exiting needs no cleanup.
-                activate: Box::new(|_: &mut Self| std::process::exit(0)),
+                // Settings are saved on every change; usage is saved here.
+                activate: Box::new(|t: &mut Self| {
+                    t.app.save_usage(usage::local_today());
+                    std::process::exit(0)
+                }),
                 ..Default::default()
             }
             .into(),
@@ -182,7 +225,7 @@ impl ksni::Tray for FerriTray {
 
 /// Runs the tray until Exit; returns the process exit code.
 pub fn run() -> i32 {
-    let lock_file = match acquire_lock_file(std::env::var_os("XDG_RUNTIME_DIR"), current_uid()) {
+    let lock_file = match acquire_lock_file(std::env::var_os("XDG_RUNTIME_DIR"), current_uid(), TRAY_LOCK) {
         Ok((f, _)) => f,
         Err(msg) => {
             eprintln!("ferrimeter: {msg}");
@@ -204,8 +247,12 @@ pub fn run() -> i32 {
             }
             None => (Default::default(), None),
         };
-        FerriTray { app: App::new(settings, path), exe: std::env::current_exe().ok() }
+        let mut app = App::new(settings, path);
+        (app.usage, app.usage_path) = crate::usage::load();
+        FerriTray { app, exe: std::env::current_exe().ok() }
     };
+    // Usually the tray counts; if a `--bar` started first, it keeps counting.
+    let (_counter_lock, counting) = claim_counter();
     let handle = match make().spawn() {
         Ok(h) => h,
         Err(ksni::Error::Watcher(_)) => {
@@ -229,7 +276,14 @@ pub fn run() -> i32 {
     let mut n = 0u64;
     while !handle.is_closed() {
         let reading = sysfs::read_adapters().map_err(|e| log_error(&format!("reading counters failed: {e}")));
-        handle.update(|t| t.app.tick(reading, Instant::now()));
+        let alert = handle.update(|t| {
+            t.app.counting = counting;
+            t.app.tick(reading, Instant::now());
+            t.app.account(usage::local_today())
+        });
+        if let Some(Some(alert)) = alert {
+            crate::linux::notify::notify("Ferrimeter", &alert.message());
+        }
         n += 1;
         std::thread::sleep((start + Duration::from_secs(n)).saturating_duration_since(Instant::now()));
     }
@@ -303,7 +357,7 @@ mod tests {
 
     #[test]
     fn unusable_runtime_dir_falls_back_to_tmp() {
-        let (file, path) = acquire_lock_file(Some("/nonexistent-ferrimeter-runtime".into()), 4_242_424).unwrap();
+        let (file, path) = acquire_lock_file(Some("/nonexistent-ferrimeter-runtime".into()), 4_242_424, TRAY_LOCK).unwrap();
         assert_eq!(path, PathBuf::from("/tmp/ferrimeter-4242424.lock"));
         drop(file);
         let _ = std::fs::remove_file(path);
@@ -331,8 +385,10 @@ mod tests {
 
     #[test]
     fn lock_path_prefers_runtime_dir() {
-        assert_eq!(lock_path(Some("/run/user/1000".into()), 1000), PathBuf::from("/run/user/1000/ferrimeter.lock"));
-        assert_eq!(lock_path(None, 1000), PathBuf::from("/tmp/ferrimeter-1000.lock"));
-        assert_eq!(lock_path(Some("".into()), 7), PathBuf::from("/tmp/ferrimeter-7.lock"));
+        assert_eq!(lock_path(Some("/run/user/1000".into()), 1000, TRAY_LOCK), PathBuf::from("/run/user/1000/ferrimeter.lock"));
+        assert_eq!(lock_path(None, 1000, TRAY_LOCK), PathBuf::from("/tmp/ferrimeter-1000.lock"));
+        assert_eq!(lock_path(Some("".into()), 7, TRAY_LOCK), PathBuf::from("/tmp/ferrimeter-7.lock"));
+        assert_eq!(lock_path(Some("/run/user/1000".into()), 1000, USAGE_LOCK), PathBuf::from("/run/user/1000/ferrimeter-usage.lock"));
+        assert_eq!(lock_path(None, 7, USAGE_LOCK), PathBuf::from("/tmp/ferrimeter-usage-7.lock"));
     }
 }

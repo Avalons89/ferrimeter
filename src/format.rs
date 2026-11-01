@@ -15,8 +15,9 @@ pub enum Units {
     Bits,
 }
 
-/// Adapter names longer than this are cut so the speeds always fit the tooltip.
-const LABEL_MAX_CHARS: usize = 40;
+/// Adapter names longer than this are cut so the speeds and the data-usage
+/// lines (cap included) always fit the 127-character tooltip.
+const LABEL_MAX_CHARS: usize = 30;
 
 /// Steps `value` up through units of size `base` once it would print with
 /// four digits (999.5 rounds to "1000"), keeping the text narrow.
@@ -56,18 +57,6 @@ pub fn format_rate(bytes_per_sec: f64, units: Units) -> String {
     format!("{} {}", number(value), names[unit])
 }
 
-/// A data amount such as "1.2 GB". Always in bytes (base 1024): data volumes
-/// are quoted in bytes even when speeds are shown in bits.
-pub fn format_bytes(bytes: u64) -> String {
-    const NAMES: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let (value, unit) = scale(bytes as f64, 1024.0, NAMES.len());
-    if unit == 0 {
-        format!("{bytes} B") // whole bytes never have decimals
-    } else {
-        format!("{} {}", number(value), NAMES[unit])
-    }
-}
-
 /// Cuts `text` to at most `max_chars` characters, ending in "…" when cut.
 pub fn shorten(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
@@ -93,23 +82,68 @@ pub fn tooltip(label: &str, rates: Option<(f64, f64)>, units: Units) -> String {
     fit_tooltip(&format!("{}\n{down}  {up}", shorten(label, LABEL_MAX_CHARS)))
 }
 
-/// Tooltip with the session's peak speeds and total data moved.
-pub fn tooltip_with_session(
+/// Data usage shown in the tooltip: (download, upload) bytes today and this
+/// billing period, and the monthly cap in bytes if one is set.
+pub struct UsageSummary {
+    pub today: (u64, u64),
+    pub month: (u64, u64),
+    pub cap: Option<u64>,
+}
+
+/// A data amount in 1000-based units (as providers bill): "34.5 GB".
+pub fn format_bytes_si(bytes: u64) -> String {
+    const NAMES: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let (value, unit) = scale(bytes as f64, 1000.0, NAMES.len());
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{} {}", number(value), NAMES[unit])
+    }
+}
+
+/// A cap preset as a whole number: "50 GB", "1 TB".
+pub fn format_cap(bytes: u64) -> String {
+    const TB: u64 = 1_000_000_000_000;
+    if bytes >= TB && bytes % TB == 0 {
+        format!("{} TB", bytes / TB)
+    } else {
+        format!("{} GB", bytes / 1_000_000_000)
+    }
+}
+
+/// Tooltip lines in order: adapter, speeds, Today, Month (with cap use),
+/// Peak. The first two always appear; later lines are added whole only while
+/// they fit, so a long name drops Peak first and never cuts a line in half.
+pub fn tooltip_full(
     label: &str,
     rates: Option<(f64, f64)>,
-    peak: (f64, f64),
-    totals: (u64, u64),
     units: Units,
+    usage: Option<&UsageSummary>,
+    peak: Option<(f64, f64)>,
 ) -> String {
     let (down, up) = widget_lines(rates, units);
-    fit_tooltip(&format!(
-        "{}\n{down}  {up}\nPeak ↓ {}  ↑ {}\nTotal ↓ {}  ↑ {}",
-        shorten(label, LABEL_MAX_CHARS),
-        format_rate(peak.0, units),
-        format_rate(peak.1, units),
-        format_bytes(totals.0),
-        format_bytes(totals.1),
-    ))
+    let mut extra = Vec::new();
+    if let Some(u) = usage {
+        extra.push(format!("Today ↓ {}  ↑ {}", format_bytes_si(u.today.0), format_bytes_si(u.today.1)));
+        let mut month = format!("Month ↓ {}  ↑ {}", format_bytes_si(u.month.0), format_bytes_si(u.month.1));
+        if let Some(cap) = u.cap.filter(|&c| c > 0) {
+            let used = u.month.0.saturating_add(u.month.1) as f64;
+            month.push_str(&format!(" · {:.0}% of {}", used / cap as f64 * 100.0, format_cap(cap)));
+        }
+        extra.push(month);
+    }
+    if let Some((pd, pu)) = peak {
+        extra.push(format!("Peak ↓ {}  ↑ {}", format_rate(pd, units), format_rate(pu, units)));
+    }
+    let mut out = fit_tooltip(&format!("{}\n{down}  {up}", shorten(label, LABEL_MAX_CHARS)));
+    for line in extra {
+        let candidate = format!("{out}\n{line}");
+        if candidate.encode_utf16().count() > TOOLTIP_MAX_UTF16 {
+            break;
+        }
+        out = candidate;
+    }
+    out
 }
 
 /// Keeps whole characters while the UTF-16 length fits the tray's limit.
@@ -197,15 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_totals() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(80 * 1024 * 1024), "80.0 MB");
-        assert_eq!(format_bytes(1288490189), "1.2 GB"); // 1.2 GiB
-        assert_eq!(format_bytes(5 * 1024u64.pow(4)), "5.0 TB");
-    }
-
-    #[test]
     fn long_labels_are_shortened() {
         assert_eq!(shorten("Ethernet", 40), "Ethernet");
         let long = "Intel(R) Wi-Fi 6E AX211 160MHz Virtual Adapter #2 (renamed)";
@@ -214,23 +239,50 @@ mod tests {
         assert!(short.ends_with('…'));
     }
 
+    const GB: u64 = 1_000_000_000;
+
     #[test]
-    fn session_tooltip() {
+    fn data_amounts_use_1000_based_units() {
+        assert_eq!(format_bytes_si(0), "0 B");
+        assert_eq!(format_bytes_si(999), "999 B");
+        assert_eq!(format_bytes_si(1_000), "1.0 KB");
+        assert_eq!(format_bytes_si(80_000_000), "80.0 MB");
+        assert_eq!(format_bytes_si(1_234_000_000), "1.2 GB");
+        assert_eq!(format_bytes_si(34_500_000_000), "34.5 GB");
+        assert_eq!(format_bytes_si(5_000_000_000_000), "5.0 TB");
+    }
+
+    #[test]
+    fn cap_labels_are_whole_units() {
+        assert_eq!(format_cap(50 * GB), "50 GB");
+        assert_eq!(format_cap(1_000 * GB), "1 TB");
+    }
+
+    fn summary(cap: Option<u64>) -> UsageSummary {
+        UsageSummary { today: (1_200_000_000, 80_000_000), month: (34_500_000_000, 2_100_000_000), cap }
+    }
+
+    #[test]
+    fn full_tooltip_order() {
         assert_eq!(
-            tooltip_with_session("Auto", Some((9.6 * MB, 512.0 * KB)), (12.4 * MB, KB), (1288490189, 80 * 1024 * 1024), Units::Bytes),
-            "Auto
-↓ 9.6 MB/s  ↑ 512 KB/s
-Peak ↓ 12.4 MB/s  ↑ 1.0 KB/s
-Total ↓ 1.2 GB  ↑ 80.0 MB"
+            tooltip_full("Auto", Some((12.4 * MB, MB)), Units::Bytes, Some(&summary(Some(50 * GB))), Some((45.1 * MB, 3.2 * MB))),
+            "Auto\n↓ 12.4 MB/s  ↑ 1.0 MB/s\nToday ↓ 1.2 GB  ↑ 80.0 MB\nMonth ↓ 34.5 GB  ↑ 2.1 GB · 73% of 50 GB\nPeak ↓ 45.1 MB/s  ↑ 3.2 MB/s"
         );
     }
 
     #[test]
-    fn session_tooltip_keeps_speeds_with_huge_label() {
-        let t = tooltip_with_session(&"X".repeat(300), Some((MB, MB)), (MB, MB), (1, 1), Units::Bytes);
-        assert!(t.encode_utf16().count() <= 127);
-        assert!(t.contains("↓ 1.0 MB/s  ↑ 1.0 MB/s"));
-        assert!(t.contains("Total ↓ 1 B  ↑ 1 B"));
+    fn month_line_without_cap() {
+        let t = tooltip_full("Auto", None, Units::Bytes, Some(&summary(None)), None);
+        assert!(t.ends_with("Month ↓ 34.5 GB  ↑ 2.1 GB"), "{t}");
+    }
+
+    #[test]
+    fn long_label_drops_whole_trailing_lines() {
+        let t = tooltip_full(&"X".repeat(300), Some((MB, MB)), Units::Bytes, Some(&summary(Some(50 * GB))), Some((MB, MB)));
+        assert!(t.encode_utf16().count() <= 127, "{}", t.encode_utf16().count());
+        assert!(t.contains("· 73% of 50 GB"), "cap info must survive: {t}");
+        assert!(!t.contains("Peak"), "Peak goes first, whole: {t}");
+        assert!(t.lines().all(|l| !l.ends_with('/')), "no half lines: {t}");
     }
 
     #[test]

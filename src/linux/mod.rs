@@ -3,6 +3,7 @@
 pub mod autostart;
 pub mod bar;
 pub mod icon;
+pub mod notify;
 pub mod sysfs;
 pub mod tray;
 
@@ -33,8 +34,14 @@ pub fn run() -> i32 {
                 settings.selection = Selection::Adapter(name);
             }
             let mut app = App::new(settings, None);
+            (app.usage, app.usage_path) = crate::usage::load();
+            // Count usage only if no other Ferrimeter (tray or bar) already does.
+            let (_counter_lock, counting) = tray::claim_counter();
+            app.counting = counting;
             let mut out = std::io::stdout().lock();
-            bar::run_loop(&mut out, &mut app, a.json, || sysfs::read_adapters().map_err(|_| ()), None)
+            let code = bar::run_loop(&mut out, &mut app, a.json, || sysfs::read_adapters().map_err(|_| ()), None);
+            app.save_usage(crate::usage::local_today());
+            code
         }
         Ok(Command::Tray) => tray::run(),
     }

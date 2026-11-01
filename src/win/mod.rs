@@ -34,7 +34,10 @@ pub fn run() {
         }
         None => (crate::settings::Settings::default(), None),
     };
-    if let Err(e) = widget::create(crate::app::App::new(loaded, path)) {
+    let mut app = crate::app::App::new(loaded, path);
+    // One instance per PC (mutex above), so this process does the counting.
+    (app.usage, app.usage_path) = crate::usage::load();
+    if let Err(e) = widget::create(app) {
         crate::settings::log_error(&format!("creating widget failed: {e}"));
         return;
     }

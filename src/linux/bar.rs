@@ -84,6 +84,9 @@ pub fn run_loop<W: Write>(
     let mut n = 0usize;
     loop {
         app.tick(read(), Instant::now());
+        if let Some(alert) = app.account(crate::usage::local_today()) {
+            crate::linux::notify::notify("Ferrimeter", &alert.message());
+        }
         // A status bar that exits closes our pipe: that's a normal end, not an error.
         if writeln!(out, "{}", bar_line(app, json)).and_then(|_| out.flush()).is_err() {
             return 0;
@@ -197,5 +200,15 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(run_loop(&mut out, &mut app, false, || Ok(vec![ad(0, 0)]), Some(2)), 0);
         assert_eq!(String::from_utf8(out).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn run_loop_counts_usage_when_counting() {
+        let mut app = App::new(Settings::default(), None);
+        let mut rx = 0;
+        let mut out = Vec::new();
+        run_loop(&mut out, &mut app, false, || { rx += 4_000; Ok(vec![ad(rx, 0)]) }, Some(3));
+        let today = crate::usage::local_today();
+        assert_eq!(app.usage.total(today, today).0, 8_000); // two intervals of 4 KB
     }
 }

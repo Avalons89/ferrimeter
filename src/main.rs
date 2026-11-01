@@ -4,6 +4,7 @@ mod app;
 mod counters;
 mod format;
 mod settings;
+mod usage;
 
 #[cfg(target_os = "linux")]
 mod linux;

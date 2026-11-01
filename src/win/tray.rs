@@ -6,6 +6,7 @@ use crate::counters::{menu_adapters, Selection};
 use crate::win::counters_win::read_adapters;
 use crate::format::Units;
 use crate::settings::{Settings, TextSize, Theme};
+use crate::usage::{cap_label, CAP_PRESETS_GB};
 use crate::win::widget::WM_APP_TRAY;
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -19,6 +20,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const TRAY_ID: u32 = 1;
 const ID_AUTO: u32 = 1;
 const ID_ADAPTER_BASE: u32 = 1000;
+/// Data cap presets use ids 30.., billing days 41..=68 (day = id - 40).
+const ID_CAP_BASE: u32 = 30;
+const ID_DAY_BASE: u32 = 40;
 
 thread_local! {
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
@@ -33,7 +37,7 @@ fn base_data(hwnd: HWND) -> NOTIFYICONDATAW {
     }
 }
 
-fn copy_tip(dst: &mut [u16; 128], text: &str) {
+fn copy_tip<const N: usize>(dst: &mut [u16; N], text: &str) {
     let mut n = 0;
     for unit in text.encode_utf16().take(dst.len() - 1) {
         dst[n] = unit;
@@ -149,6 +153,18 @@ pub fn set_tooltip(hwnd: HWND, text: &str) {
     }
 }
 
+/// Shows a tray notification (Windows toast / balloon) with a warning icon.
+pub fn notify(hwnd: HWND, title: &str, text: &str) {
+    let mut nid = base_data(hwnd);
+    nid.uFlags = NIF_INFO;
+    copy_tip(&mut nid.szInfoTitle, title);
+    copy_tip(&mut nid.szInfo, text);
+    nid.dwInfoFlags = NIIF_WARNING;
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
 pub fn remove(hwnd: HWND) {
     unsafe {
         let _ = Shell_NotifyIconW(NIM_DELETE, &base_data(hwnd));
@@ -200,6 +216,10 @@ pub fn command_for_id(id: u32, adapter_guids: &[String]) -> Option<MenuCommand> 
         13 => ToggleAutostart,
         14 => ResetPosition,
         15 => Exit,
+        n if (ID_CAP_BASE..ID_CAP_BASE + CAP_PRESETS_GB.len() as u32).contains(&n) => {
+            SetCap(CAP_PRESETS_GB[(n - ID_CAP_BASE) as usize])
+        }
+        n if (ID_DAY_BASE + 1..=ID_DAY_BASE + 28).contains(&n) => SetBillingDay(n - ID_DAY_BASE),
         n if n >= ID_ADAPTER_BASE => SelectAdapter(adapter_guids.get((n - ID_ADAPTER_BASE) as usize)?.clone()),
         _ => return None,
     })
@@ -246,6 +266,16 @@ pub fn show_menu(hwnd: HWND, s: &Settings, anchor: Option<(i32, i32)>) -> Option
         let _ = AppendMenuW(menu, MF_POPUP, adapter_menu.0 as usize, w!("Adapter"));
 
         submenu(menu, "Units", &[(2, "Bytes/s", s.units == Units::Bytes), (3, "Bits/s", s.units == Units::Bits)]);
+        let caps: Vec<(u32, String, bool)> = CAP_PRESETS_GB
+            .iter()
+            .enumerate()
+            .map(|(i, &gb)| (ID_CAP_BASE + i as u32, cap_label(gb), s.cap_gb == gb))
+            .collect();
+        let days: Vec<(u32, String, bool)> = (1..=28u32).map(|d| (ID_DAY_BASE + d, d.to_string(), s.billing_day == d)).collect();
+        for (label, entries) in [("Data cap", &caps), ("Billing day", &days)] {
+            let items: Vec<(u32, &str, bool)> = entries.iter().map(|(id, l, c)| (*id, l.as_str(), *c)).collect();
+            submenu(menu, label, &items);
+        }
         submenu(menu, "Theme", &[
             (17, "Follow Windows", s.theme == Theme::System),
             (4, "Dark", s.theme == Theme::Dark),
@@ -315,6 +345,13 @@ mod tests {
         assert_eq!(command_for_id(6, &g), Some(MenuCommand::SetTheme(Theme::Transparent)));
         assert_eq!(command_for_id(15, &g), Some(MenuCommand::Exit));
         assert_eq!(command_for_id(16, &g), Some(MenuCommand::ToggleDock));
+        assert_eq!(command_for_id(30, &g), Some(MenuCommand::SetCap(0)));
+        assert_eq!(command_for_id(34, &g), Some(MenuCommand::SetCap(50)));
+        assert_eq!(command_for_id(38, &g), Some(MenuCommand::SetCap(1000)));
+        assert_eq!(command_for_id(39, &g), None);
+        assert_eq!(command_for_id(41, &g), Some(MenuCommand::SetBillingDay(1)));
+        assert_eq!(command_for_id(68, &g), Some(MenuCommand::SetBillingDay(28)));
+        assert_eq!(command_for_id(69, &g), None);
         assert_eq!(command_for_id(17, &g), Some(MenuCommand::SetTheme(Theme::System)));
         assert_eq!(command_for_id(0, &g), None);
     }

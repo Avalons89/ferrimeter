@@ -16,7 +16,9 @@ using about 1 MB of RAM and effectively no CPU.
 - Live download/upload speed, updated every second
 - Floating, borderless, always-on-top widget; drag it anywhere, or lock it in place
 - **Dock on taskbar**: sits right next to the tray icons and follows the taskbar
-- Tray icon whose tooltip shows current speeds, the session's peak, and total data moved
+- Tray icon whose tooltip shows current speeds, today's and this month's data usage, and the session's peak
+- **Data usage**: today and this billing month, with an optional monthly data cap
+  (5 GB to 1 TB) and a warning at 80% and at 100%
 - **Auto** mode adds up all connected network adapters, or pick one specific adapter
 - Bytes per second (KB/s, MB/s) or bits per second (Kbps, Mbps)
 - Follow Windows (matches the taskbar's light/dark setting), Dark, Light and Transparent themes; three text sizes
@@ -59,6 +61,8 @@ You can also [build it yourself](#build).
   | Units | Bytes/s or Bits/s |
   | Theme | Follow Windows, Dark, Light, Transparent |
   | Text size | Small, Medium, Large |
+  | Data cap | Off, or 5 GB to 1 TB per billing month (download + upload) |
+  | Billing day | Day of the month (1-28) your data plan resets |
   | Always on top | Keep the widget above other windows |
   | Dock on taskbar | Sit on the taskbar next to the tray icons (can't be dragged while docked) |
   | Lock position | Stop the widget from being dragged |
@@ -101,13 +105,15 @@ path in status-bar configs.
 ### Tray icon
 
 Run `ferrimeter`. The icon shows the download speed on top (green) and the upload
-speed below (orange), for example `1.2M` over `80K`. Hover for exact speeds, the
-session's peak and total data moved. Right-click for:
+speed below (orange), for example `1.2M` over `80K`. Hover for exact speeds, today's
+and this month's data usage, and the session's peak. Right-click for:
 
 | Menu | What it does |
 |---|---|
 | Adapter | Auto, or one specific network interface |
 | Units | Bytes/s or Bits/s |
+| Data cap | Off, or 5 GB to 1 TB per billing month (download + upload) |
+| Billing day | Day of the month (1-28) your data plan resets |
 | Start at login | Adds or removes `~/.config/autostart/ferrimeter.desktop` |
 | Exit | Quit |
 
@@ -170,6 +176,15 @@ are left out, though VPNs can be picked from the Adapter menu.
 Unit steps: bytes use 1024 (KB/s, MB/s); bits use 1000 (Kbps, Mbps), the way network
 speeds are usually quoted.
 
+**Data usage** is counted while Ferrimeter runs (turn on start at login so nothing is
+missed), per day, for the same adapters the speed display uses. Amounts use 1000-based
+units the way providers bill, so a "50 GB" cap means 50,000,000,000 bytes, and the
+warnings never come later than your provider's count. The cap counts download plus
+upload. Each warning (80% and 100%) is shown once per billing month, as a Windows
+notification or a desktop notification on Linux. Only one Ferrimeter per user counts:
+on Linux, a `--bar` started while the tray runs (or the other way round) shows the
+same totals without counting them twice.
+
 ## Privacy
 
 Ferrimeter makes no network connections. On Windows the executable doesn't even
@@ -180,6 +195,7 @@ It stores two files, in `%APPDATA%\ferrimeter` on Windows or `~/.config/ferrimet
 on Linux:
 
 - `settings.json`: your choices and the widget position
+- `usage.json`: daily download/upload totals (the last 400 days)
 - `error.log`: rare errors, if any
 
 "Start with Windows" adds one value, `ferrimeter`, under
@@ -262,6 +278,8 @@ Window behavior isn't covered by unit tests. Before a release, check on Windows:
 13. Docked: the widget sits just left of the tray icons, comes back above the taskbar
     within a second after clicking the taskbar, and follows when tray icons are added.
 14. Follow Windows: switching Windows between light and dark mode recolors the widget.
+15. With a data cap set below this month's usage, one notification appears, and only
+    once; the tooltip's Month line shows the percentage of the cap.
 
 On Linux:
 

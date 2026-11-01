@@ -287,12 +287,16 @@ fn follow_taskbar(hwnd: HWND) {
 
 fn tick(hwnd: HWND) {
     let adapters = read_adapters().map_err(|e| log_error(&format!("GetIfTable2 failed: {e}")));
-    let tip = with_app(hwnd, |a| {
+    let result = with_app(hwnd, |a| {
         a.tick(adapters, Instant::now());
-        a.tooltip.clone()
+        let alert = a.account(crate::usage::local_today());
+        (a.tooltip.clone(), alert)
     });
-    if let Some(tip) = tip {
+    if let Some((tip, alert)) = result {
         tray::set_tooltip(hwnd, &tip);
+        if let Some(alert) = alert {
+            tray::notify(hwnd, "Ferrimeter", &alert.message());
+        }
     }
     unsafe {
         // Windows refuses topmost while a full-screen app has focus, and the
@@ -540,6 +544,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
                 tray::remove(hwnd);
+                with_app(hwnd, |a| a.save_usage(crate::usage::local_today()));
                 let ptr = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut App;
                 if !ptr.is_null() {
                     drop(Box::from_raw(ptr));

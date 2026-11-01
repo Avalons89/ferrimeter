@@ -2,7 +2,8 @@
 
 use crate::counters::{compute_rates, select, AdapterInfo, Sample, Selection};
 use crate::format::{self, Units};
-use crate::settings::{log_error, save_to, Settings, TextSize, Theme};
+use crate::settings::{log_error, save_json, save_to, Settings, TextSize, Theme};
+use crate::usage::{self, CapAlert, NaiveDate, UsageStore};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -16,6 +17,10 @@ pub enum MenuCommand {
     ToggleAlwaysOnTop,
     ToggleLocked,
     ToggleDock,
+    /// Monthly cap in GB; 0 turns it off.
+    SetCap(u32),
+    /// Billing period start day, 1-28.
+    SetBillingDay(u32),
     ToggleVisible,
     ToggleAutostart,
     ResetPosition,
@@ -36,7 +41,25 @@ pub struct App {
     pub totals: (u64, u64),
     /// The last reading failed (counters unavailable).
     pub read_failed: bool,
+    /// Daily data usage; see `account`.
+    pub usage: UsageStore,
+    /// Where `usage` is saved (counting) or re-read from (reader); None = memory only.
+    pub usage_path: Option<PathBuf>,
+    /// True for the one process per PC that adds traffic to `usage`; a second
+    /// process (e.g. `--bar` while the tray runs) only re-reads the file.
+    pub counting: bool,
+    /// Adapter label from the last tick, for rebuilding the tooltip.
+    label: String,
+    /// `totals` already added to `usage`.
+    accounted: (u64, u64),
+    account_calls: u64,
 }
+
+/// Counting processes save usage this often (in `account` calls, ~1 per second).
+const USAGE_SAVE_EVERY: u64 = 60;
+/// Reader processes re-read the usage file this often.
+const USAGE_RELOAD_EVERY: u64 = 30;
+const BYTES_PER_GB: u64 = 1_000_000_000;
 
 impl App {
     pub fn new(settings: Settings, settings_path: Option<PathBuf>) -> App {
@@ -53,6 +76,12 @@ impl App {
             peak: (0.0, 0.0),
             totals: (0, 0),
             read_failed: false,
+            usage: UsageStore::default(),
+            usage_path: None,
+            counting: true,
+            label: "Ferrimeter".into(),
+            accounted: (0, 0),
+            account_calls: 0,
         }
     }
 
@@ -88,11 +117,65 @@ impl App {
         };
         let units = self.settings.units;
         (self.down, self.up) = format::widget_lines(self.rates, units);
-        self.tooltip = if self.peak == (0.0, 0.0) && self.totals == (0, 0) {
-            format::tooltip(&label, self.rates, units)
-        } else {
-            format::tooltip_with_session(&label, self.rates, self.peak, self.totals, units)
-        };
+        self.label = label;
+        let peak = Some(self.peak).filter(|p| *p != (0.0, 0.0));
+        self.tooltip = format::tooltip_full(&self.label, self.rates, units, None, peak);
+    }
+
+    fn cap_bytes(&self) -> Option<u64> {
+        Some(u64::from(self.settings.cap_gb) * BYTES_PER_GB).filter(|&c| c > 0)
+    }
+
+    /// Call once per tick with the local date: adds the bytes moved since the
+    /// last call to today's usage (counting process only), saves periodically,
+    /// checks the cap, and rebuilds the tooltip with Today/Month lines.
+    /// Returns a cap level reached for the first time this billing period.
+    pub fn account(&mut self, today: NaiveDate) -> Option<CapAlert> {
+        self.account_calls += 1;
+        if self.counting {
+            let delta = (self.totals.0 - self.accounted.0, self.totals.1 - self.accounted.1);
+            if delta != (0, 0) {
+                self.usage.add(today, delta.0, delta.1);
+            }
+            self.accounted = self.totals;
+            if self.account_calls % USAGE_SAVE_EVERY == 0 {
+                self.save_usage(today);
+            }
+        } else if self.account_calls % USAGE_RELOAD_EVERY == 1 {
+            if let Some(path) = &self.usage_path {
+                self.usage = crate::settings::load_json(path).0;
+            }
+        }
+        let billing_day = self.settings.billing_day;
+        let cap = self.cap_bytes();
+        let alert = if self.counting { self.usage.cap_alert(today, billing_day, cap) } else { None };
+        let start = usage::period_start(today, billing_day);
+        let month = self.usage.total(start, today);
+        if alert.is_some() {
+            self.save_usage(today); // remember the announcement across restarts
+        }
+        let summary = format::UsageSummary { today: self.usage.total(today, today), month, cap };
+        let peak = Some(self.peak).filter(|p| *p != (0.0, 0.0));
+        self.tooltip = format::tooltip_full(&self.label, self.rates, self.settings.units, Some(&summary), peak);
+        alert.map(|level| CapAlert {
+            level,
+            used: month.0.saturating_add(month.1),
+            cap: cap.unwrap_or(0),
+            resets: usage::next_reset(today, billing_day),
+        })
+    }
+
+    /// Saves usage (counting process only), dropping days older than kept.
+    pub fn save_usage(&mut self, today: NaiveDate) {
+        if !self.counting {
+            return;
+        }
+        self.usage.prune(today);
+        if let Some(path) = &self.usage_path {
+            if let Err(e) = save_json(path, &self.usage) {
+                log_error(&format!("saving usage failed: {e}"));
+            }
+        }
     }
 
     /// Applies a settings change. Returns `true` when settings changed (the
@@ -109,6 +192,8 @@ impl App {
             MenuCommand::ToggleAlwaysOnTop => s.always_on_top = !s.always_on_top,
             MenuCommand::ToggleLocked => s.locked = !s.locked,
             MenuCommand::ToggleDock => s.docked = !s.docked,
+            MenuCommand::SetCap(gb) => s.cap_gb = *gb,
+            MenuCommand::SetBillingDay(day) => s.billing_day = (*day).clamp(1, 28),
             MenuCommand::ToggleVisible => s.visible = !s.visible,
             MenuCommand::ResetPosition => s.position = None,
             MenuCommand::ToggleAutostart | MenuCommand::Exit => return false,
@@ -156,7 +241,7 @@ mod tests {
         assert_eq!(a.down, "↓ 2.0 KB/s");
         assert_eq!(
             a.tooltip,
-            "Auto\n↓ 2.0 KB/s  ↑ 0 B/s\nPeak ↓ 2.0 KB/s  ↑ 0 B/s\nTotal ↓ 2.0 KB  ↑ 0 B"
+            "Auto\n↓ 2.0 KB/s  ↑ 0 B/s\nPeak ↓ 2.0 KB/s  ↑ 0 B/s"
         );
     }
 
@@ -186,6 +271,49 @@ mod tests {
         assert_eq!(a.down, "↓ —");
     }
 
+    fn day(n: u32) -> crate::usage::NaiveDate {
+        crate::usage::NaiveDate::from_ymd_opt(2026, 11, n).unwrap()
+    }
+
+    #[test]
+    fn account_adds_bytes_moved_since_last_call() {
+        let mut a = App::new(Settings::default(), None);
+        let t = Instant::now();
+        a.tick(Ok(vec![ad("a", 0, 0)]), t);
+        a.tick(Ok(vec![ad("a", 3_000, 500)]), t + Duration::from_secs(1));
+        a.account(day(2));
+        a.tick(Ok(vec![ad("a", 5_000, 700)]), t + Duration::from_secs(2));
+        a.account(day(2));
+        assert_eq!(a.usage.total(day(2), day(2)), (5_000, 700));
+        assert!(a.tooltip.contains("Today ↓ 5.0 KB  ↑ 700 B"), "{}", a.tooltip);
+        assert!(a.tooltip.contains("Month ↓ 5.0 KB  ↑ 700 B"), "{}", a.tooltip);
+    }
+
+    #[test]
+    fn reader_mode_never_counts() {
+        let mut a = App::new(Settings::default(), None);
+        a.counting = false;
+        let t = Instant::now();
+        a.tick(Ok(vec![ad("a", 0, 0)]), t);
+        a.tick(Ok(vec![ad("a", 9_000, 9_000)]), t + Duration::from_secs(1));
+        a.account(day(2));
+        assert_eq!(a.usage.total(day(1), day(30)), (0, 0));
+    }
+
+    #[test]
+    fn account_reports_cap_crossing_once() {
+        let mut s = Settings::default();
+        s.cap_gb = 5;
+        let mut a = App::new(s, None);
+        a.usage.add(day(2), 4_100_000_000, 0); // 82% of 5 GB
+        let alert = a.account(day(2)).expect("80% alert");
+        assert_eq!(alert.level, crate::usage::CapLevel::Warn80);
+        assert_eq!(alert.used, 4_100_000_000);
+        assert_eq!(alert.cap, 5_000_000_000);
+        assert!(a.account(day(2)).is_none());
+        assert!(a.tooltip.contains("· 82% of 5 GB"), "{}", a.tooltip);
+    }
+
     #[test]
     fn apply_commands() {
         let mut a = App::new(Settings::default(), None);
@@ -201,6 +329,10 @@ mod tests {
         assert!(!a.settings.docked);
         assert!(a.apply(&MenuCommand::ToggleDock));
         assert!(a.settings.docked);
+        assert!(a.apply(&MenuCommand::SetCap(50)));
+        assert_eq!(a.settings.cap_gb, 50);
+        assert!(a.apply(&MenuCommand::SetBillingDay(15)));
+        assert_eq!(a.settings.billing_day, 15);
         assert!(!a.apply(&MenuCommand::ToggleAutostart));
         assert!(!a.apply(&MenuCommand::Exit));
     }
