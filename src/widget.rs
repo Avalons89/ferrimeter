@@ -11,7 +11,7 @@ use crate::settings::{log_error, Settings, TextSize, Theme};
 use crate::{autostart, tray};
 use std::time::Instant;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -100,6 +100,21 @@ unsafe fn default_position(w: i32, h: i32, dpi: u32) -> (i32, i32) {
     (work.right - w - m, work.bottom - h - m)
 }
 
+/// Converts a GDI-drawn 32-bit buffer for UpdateLayeredWindow: key-colored
+/// background becomes alpha 1 (invisible but still clickable, so the whole
+/// widget can be dragged), everything else becomes opaque.
+fn keyed_to_premultiplied(px: &mut [u32], key: u32) {
+    for p in px {
+        *p = if *p & 0x00FF_FFFF == key { 0x0100_0000 } else { *p | 0xFF00_0000 };
+    }
+}
+
+thread_local! {
+    /// Which layered mode the window is in: Some(true) = per-pixel alpha
+    /// (Transparent theme), Some(false) = whole-window alpha.
+    static PER_PIXEL: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 fn snapshot(hwnd: HWND) -> Option<Settings> {
     with_app(hwnd, |a| a.settings.clone())
 }
@@ -125,15 +140,34 @@ pub fn sync(hwnd: HWND, s: &Settings) {
         if MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid() {
             (x, y) = default_position(w, h, dpi);
         }
+        let per_pixel = s.theme == Theme::Transparent;
+        if PER_PIXEL.get() != Some(per_pixel) {
+            // A window can't go from SetLayeredWindowAttributes to
+            // UpdateLayeredWindow until WS_EX_LAYERED is cleared and set again.
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & !(WS_EX_LAYERED.0 as isize));
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as isize);
+            PER_PIXEL.set(Some(per_pixel));
+        }
+        if !per_pixel {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+        }
         let z = if s.always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
         let _ = SetWindowPos(hwnd, Some(z), x, y, w, h, SWP_NOACTIVATE);
-        let _ = if s.theme == Theme::Transparent {
-            SetLayeredWindowAttributes(hwnd, COLOR_KEY, 0, LWA_COLORKEY)
-        } else {
-            SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)
-        };
         let _ = ShowWindow(hwnd, if s.visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        redraw(hwnd);
+    }
+}
+
+/// Repaints: through WM_PAINT normally, or directly for the per-pixel-alpha
+/// Transparent theme, which Windows never sends WM_PAINT.
+fn redraw(hwnd: HWND) {
+    unsafe {
+        if PER_PIXEL.get() == Some(true) {
+            present_layered(hwnd);
+        } else {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
     }
 }
 
@@ -151,8 +185,10 @@ pub fn create(app: App) -> windows::core::Result<HWND> {
         if RegisterClassExW(&class) == 0 {
             return Err(windows::core::Error::from_win32());
         }
+        // NOACTIVATE: clicking or dragging the widget never takes focus away
+        // from the window you were using (so Alt+F4 still closes that one).
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             CLASS_NAME,
             w!("Ferrimeter"),
             WS_POPUP,
@@ -187,8 +223,8 @@ fn tick(hwnd: HWND) {
         if want_top && !is_top {
             let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
     }
+    redraw(hwnd);
 }
 
 pub fn handle_command(hwnd: HWND, cmd: MenuCommand) {
@@ -224,53 +260,109 @@ pub fn handle_command(hwnd: HWND, cmd: MenuCommand) {
     }
 }
 
-unsafe fn paint(hwnd: HWND) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-    let Some((s, down, up)) = with_app(hwnd, |a| (a.settings.clone(), a.down.clone(), a.up.clone())) else {
-        let _ = EndPaint(hwnd, &ps);
-        return;
-    };
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+/// What to draw, copied out of `App` so no borrow is held during GDI calls.
+struct Frame {
+    settings: Settings,
+    down: String,
+    up: String,
+}
+
+fn frame(hwnd: HWND) -> Option<Frame> {
+    with_app(hwnd, |a| Frame { settings: a.settings.clone(), down: a.down.clone(), up: a.up.clone() })
+}
+
+/// Draws background and both lines into `dc`, which holds a w×h bitmap.
+unsafe fn draw(hwnd: HWND, dc: HDC, w: i32, h: i32, f: &Frame) {
+    let s = &f.settings;
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let (_, _, line) = measure(hwnd, &s);
+    let (_, _, line) = measure(hwnd, s);
     let pal = palette(s.theme);
 
-    // Draw into an off-screen bitmap, then copy once, so the text never flickers.
-    let mem = CreateCompatibleDC(Some(hdc));
-    let bmp = CreateCompatibleBitmap(hdc, w, h);
-    let old_bmp = SelectObject(mem, bmp.into());
     let brush = CreateSolidBrush(pal.bg);
-    FillRect(mem, &rc, brush);
+    FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: h }, brush);
     let _ = DeleteObject(brush.into());
 
     let font = create_font(s.text_size, dpi);
-    let old_font = SelectObject(mem, font.into());
-    SetBkMode(mem, TRANSPARENT);
+    let old_font = SelectObject(dc, font.into());
+    SetBkMode(dc, TRANSPARENT);
     let (x, y) = (scale(PAD_X, dpi), scale(PAD_Y, dpi));
-    for (i, (text, color)) in [(down, pal.down), (up, pal.up)].into_iter().enumerate() {
-        let text = wide(&text);
+    for (i, (text, color)) in [(&f.down, pal.down), (&f.up, pal.up)].into_iter().enumerate() {
+        let text = wide(text);
         let ty = y + i as i32 * line;
         if s.theme == Theme::Transparent {
             // A 1px dark outline keeps the text readable on any wallpaper.
-            SetTextColor(mem, rgb(0, 0, 0));
+            SetTextColor(dc, rgb(0, 0, 0));
             for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let _ = TextOutW(mem, x + dx, ty + dy, &text);
+                let _ = TextOutW(dc, x + dx, ty + dy, &text);
             }
         }
-        SetTextColor(mem, color);
-        let _ = TextOutW(mem, x, ty, &text);
+        SetTextColor(dc, color);
+        let _ = TextOutW(dc, x, ty, &text);
     }
-    let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
-
-    SelectObject(mem, old_font);
+    SelectObject(dc, old_font);
     let _ = DeleteObject(font.into());
-    SelectObject(mem, old_bmp);
-    let _ = DeleteObject(bmp.into());
-    let _ = DeleteDC(mem);
+}
+
+/// Opaque themes: draw off-screen, then copy once, so the text never flickers.
+unsafe fn paint(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(hwnd, &mut ps);
+    if let Some(f) = frame(hwnd) {
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+        let mem = CreateCompatibleDC(Some(hdc));
+        let bmp = CreateCompatibleBitmap(hdc, w, h);
+        let old_bmp = SelectObject(mem, bmp.into());
+        draw(hwnd, mem, w, h, &f);
+        let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
+        SelectObject(mem, old_bmp);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
     let _ = EndPaint(hwnd, &ps);
+}
+
+/// Transparent theme: per-pixel alpha via UpdateLayeredWindow.
+unsafe fn present_layered(hwnd: HWND) {
+    let Some(f) = frame(hwnd) else { return };
+    let (w, h, _) = measure(hwnd, &f.settings);
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let screen = GetDC(None);
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    if let Ok(bmp) = CreateDIBSection(Some(screen), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+        let mem = CreateCompatibleDC(Some(screen));
+        let old_bmp = SelectObject(mem, bmp.into());
+        draw(hwnd, mem, w, h, &f);
+        let _ = GdiFlush();
+        let px = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
+        keyed_to_premultiplied(px, COLOR_KEY.0);
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let _ = UpdateLayeredWindow(
+            hwnd, Some(screen), None, Some(&SIZE { cx: w, cy: h }), Some(mem),
+            Some(&POINT { x: 0, y: 0 }), COLORREF(0), Some(&blend), ULW_ALPHA,
+        );
+        SelectObject(mem, old_bmp);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+    }
+    ReleaseDC(None, screen);
 }
 
 fn open_menu(hwnd: HWND, anchor: Option<(i32, i32)>) {
@@ -284,6 +376,8 @@ fn open_menu(hwnd: HWND, anchor: Option<(i32, i32)>) {
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            // Clicking the widget must not steal focus from the user's window.
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_NCHITTEST => {
                 let locked = with_app(hwnd, |a| a.settings.locked).unwrap_or(false);
                 LRESULT(if locked { HTCLIENT } else { HTCAPTION } as isize)
@@ -319,6 +413,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // scaling: follow Windows' suggested spot rather than snapping
                 // back to the last saved position.
                 let suggested = *(lparam.0 as *const RECT);
+                tray::refresh_icon(hwnd);
                 with_app(hwnd, |a| {
                     a.settings.position = Some((suggested.left, suggested.top));
                     a.save();
@@ -342,7 +437,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(s) = snapshot(hwnd) {
                     sync(hwnd, &s);
                 }
-                let _ = SetForegroundWindow(hwnd);
                 LRESULT(0)
             }
             WM_APP_TRAY => {
@@ -371,5 +465,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_pixels_become_nearly_transparent_and_rest_opaque() {
+        // 0x00BBGGRR as GDI writes it; output is premultiplied 0xAARRGGBB-order DIB words.
+        let mut px = [0x0001_0101, 0x0064_D94C, 0x0000_0000];
+        keyed_to_premultiplied(&mut px, 0x0001_0101);
+        // Alpha 1 (not 0) keeps the background clickable for dragging.
+        assert_eq!(px, [0x0100_0000, 0xFF64_D94C, 0xFF00_0000]);
     }
 }

@@ -59,9 +59,13 @@ unsafe fn draw_icon(hwnd: HWND) -> Option<HICON> {
     };
     let screen = GetDC(None);
     let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-    let color = CreateDIBSection(Some(screen), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+    let color = CreateDIBSection(Some(screen), &bmi, DIB_RGB_COLORS, &mut bits, None, 0);
     let mem = CreateCompatibleDC(Some(screen));
     ReleaseDC(None, screen);
+    let Ok(color) = color else {
+        let _ = DeleteDC(mem);
+        return None;
+    };
     let old_bmp = SelectObject(mem, color.into());
 
     let font = CreateFontW(
@@ -88,7 +92,9 @@ unsafe fn draw_icon(hwnd: HWND) -> Option<HICON> {
         *p = if *p & 0x00FF_FFFF != 0 { *p | 0xFF00_0000 } else { 0 };
     }
 
-    let mask = CreateBitmap(size, size, 1, 1, None);
+    // The alpha channel decides visibility; the mask just has to be defined (all zero).
+    let mask_bits = vec![0u8; (((size + 15) / 16) * 2 * size) as usize]; // WORD-aligned rows
+    let mask = CreateBitmap(size, size, 1, 1, Some(mask_bits.as_ptr().cast()));
     let info = ICONINFO { fIcon: true.into(), hbmMask: mask, hbmColor: color, ..Default::default() };
     let icon = CreateIconIndirect(&info).ok();
     let _ = DeleteObject(mask.into());
@@ -109,9 +115,27 @@ pub fn add(hwnd: HWND) {
         nid.uCallbackMessage = WM_APP_TRAY;
         nid.hIcon = icon.unwrap_or_default();
         copy_tip(&mut nid.szTip, "Ferrimeter");
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        // If Explorer still has our icon (TaskbarCreated without a real
+        // restart), ADD fails; MODIFY then applies the fresh icon instead.
+        if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    }
+}
+
+/// Redraws the icon at the current DPI (it would blur after a scaling change).
+pub fn refresh_icon(hwnd: HWND) {
+    unsafe {
+        let Some(icon) = draw_icon(hwnd) else { return };
+        let mut nid = base_data(hwnd);
+        nid.uFlags = NIF_ICON;
+        nid.hIcon = icon;
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        if let Some(old) = ICON.replace(Some(icon)) {
+            let _ = DestroyIcon(old);
+        }
     }
 }
 

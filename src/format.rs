@@ -26,9 +26,10 @@ pub fn format_rate(bytes_per_sec: f64, units: Units) -> String {
         Units::Bytes => (bytes, 1024.0, ["B/s", "KB/s", "MB/s", "GB/s"]),
         Units::Bits => (bytes * 8.0, 1000.0, ["bps", "Kbps", "Mbps", "Gbps"]),
     };
-    // Step up once a value reaches four digits, so the widget stays narrow.
+    // Step up once a value would print with four digits (999.5 rounds to
+    // "1000"), so the widget stays narrow.
     let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < names.len() {
+    while value >= 999.5 && unit + 1 < names.len() {
         value /= base;
         unit += 1;
     }
@@ -96,6 +97,13 @@ mod tests {
         assert_eq!(format_rate(1_250_000.0, Units::Bits), "10.0 Mbps");
         assert_eq!(format_rate(12_500_000.0, Units::Bits), "100 Mbps");
         assert_eq!(format_rate(125.0, Units::Bits), "1.0 Kbps");
+    }
+
+    #[test]
+    fn rounding_to_1000_steps_up() {
+        assert_eq!(format_rate(999.7, Units::Bytes), "1.0 KB/s");
+        assert_eq!(format_rate(999.7 * KB, Units::Bytes), "1.0 MB/s");
+        assert_eq!(format_rate(124.96, Units::Bits), "1.0 Kbps"); // 999.68 bps
     }
 
     #[test]

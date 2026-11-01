@@ -28,7 +28,14 @@ fn main() {
     }
 
     let path = settings::settings_path();
-    let loaded = path.as_deref().map(settings::load_from).unwrap_or_default();
+    let (loaded, path) = match path {
+        Some(p) => {
+            let l = settings::load_from(&p);
+            // Never save over a settings file we couldn't read.
+            (l.settings, Some(p).filter(|_| l.can_save))
+        }
+        None => (settings::Settings::default(), None),
+    };
     if let Err(e) = widget::create(app::App::new(loaded, path)) {
         settings::log_error(&format!("creating widget failed: {e}"));
         return;
