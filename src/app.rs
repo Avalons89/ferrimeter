@@ -42,7 +42,7 @@ impl App {
             rates: None,
             down,
             up,
-            tooltip: format::tooltip("netspeed", None, units),
+            tooltip: format::tooltip("Ferrimeter", None, units),
         }
     }
 

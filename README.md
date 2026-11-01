@@ -1,4 +1,4 @@
-# netspeed-rs
+# Ferrimeter
 
 A tiny always-on-top network speed widget for Windows 10 and 11, written in Rust.
 
@@ -28,7 +28,7 @@ install, using about 1 MB of RAM and effectively no CPU.
 ## Install
 
 There are no prebuilt downloads yet; build it from source (see [Build](#build)) and copy
-`target\release\netspeed.exe` wherever you like. Nothing else needs to be installed.
+`target\release\ferrimeter.exe` wherever you like. Nothing else needs to be installed.
 
 ## Use
 
@@ -74,15 +74,15 @@ speeds are usually quoted.
 
 ## Privacy
 
-netspeed-rs makes no network connections. The executable doesn't even import
+Ferrimeter makes no network connections. The executable doesn't even import
 Windows' networking libraries (`ws2_32`, `winhttp`, `wininet`); the only
 network-related call it makes is reading the adapter counters. It stores two files,
-both in `%APPDATA%\netspeed-rs`:
+both in `%APPDATA%\ferrimeter`:
 
 - `settings.json`: your choices and the widget position
 - `error.log`: rare errors, if any
 
-"Start with Windows" adds one value, `netspeed-rs`, under
+"Start with Windows" adds one value, `ferrimeter`, under
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; turning it off removes it.
 
 ## Build
@@ -94,12 +94,12 @@ Requirements:
 - Visual Studio Build Tools with the "Desktop development with C++" workload (for the linker)
 
 ```
-git clone https://github.com/Avalons89/netspeed-rs.git
-cd netspeed-rs
+git clone https://github.com/Avalons89/ferrimeter.git
+cd ferrimeter
 cargo build --release
 ```
 
-The result is `target\release\netspeed.exe`. The C runtime is linked statically, so
+The result is `target\release\ferrimeter.exe`. The C runtime is linked statically, so
 the exe runs without the Visual C++ redistributable.
 
 Run the tests with:
@@ -139,7 +139,7 @@ Window behavior isn't covered by unit tests. Before a release, check:
 7. Start with Windows on: the registry value exists. Off: it's removed.
 8. Unplugging or disabling the selected adapter makes the tooltip show the fallback.
 9. Task Manager: about 0% CPU, under 5 MB memory.
-10. Resource Monitor shows no network connections for netspeed.exe.
+10. Resource Monitor shows no network connections for ferrimeter.exe.
 11. With two monitors at different scaling, dragging across works and the widget stays where dropped.
 12. Right-clicking the tray icon opens exactly one menu, at the icon.
 

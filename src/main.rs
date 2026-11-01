@@ -19,7 +19,7 @@ fn main() {
     std::panic::set_hook(Box::new(|info| settings::log_error(&format!("panic: {info}"))));
 
     // Held for the life of the process; a second launch sees it and hands off.
-    let _instance = unsafe { CreateMutexW(None, true, w!("Local\\netspeed-rs-singleton")) };
+    let _instance = unsafe { CreateMutexW(None, true, w!("Local\\ferrimeter-singleton")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         if let Ok(existing) = unsafe { FindWindowW(widget::CLASS_NAME, PCWSTR::null()) } {
             let _ = unsafe { PostMessageW(Some(existing), widget::WM_APP_SHOW, WPARAM(0), LPARAM(0)) };

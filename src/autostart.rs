@@ -8,7 +8,7 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ,
 };
 
-pub const VALUE_NAME: &str = "netspeed-rs";
+pub const VALUE_NAME: &str = "ferrimeter";
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 fn check(status: WIN32_ERROR) -> windows::core::Result<()> {
@@ -74,15 +74,15 @@ pub fn set(value_name: &str, exe: &Path, enabled: bool) -> windows::core::Result
 mod tests {
     use super::*;
 
-    const T: &str = "netspeed-rs-test-a";
-    const T2: &str = "netspeed-rs-test-b";
+    const T: &str = "ferrimeter-test-a";
+    const T2: &str = "ferrimeter-test-b";
 
     #[test]
     fn enable_disable_round_trip() {
-        let exe = Path::new(r"C:\Tools\netspeed.exe");
+        let exe = Path::new(r"C:\Tools\ferrimeter.exe");
         set(T, exe, true).unwrap();
         assert!(is_enabled(T, exe));
-        assert!(is_enabled(T, Path::new(r"c:\tools\NETSPEED.EXE")));
+        assert!(is_enabled(T, Path::new(r"c:\tools\FERRIMETER.EXE")));
         set(T, exe, false).unwrap();
         assert!(!is_enabled(T, exe));
         set(T, exe, false).unwrap();
@@ -90,10 +90,10 @@ mod tests {
 
     #[test]
     fn moved_exe_reads_disabled() {
-        set(T2, Path::new(r"C:\Old\netspeed.exe"), true).unwrap();
-        assert!(!is_enabled(T2, Path::new(r"C:\New\netspeed.exe")));
-        set(T2, Path::new(r"C:\New\netspeed.exe"), true).unwrap();
-        assert!(is_enabled(T2, Path::new(r"C:\New\netspeed.exe")));
-        set(T2, Path::new(r"C:\New\netspeed.exe"), false).unwrap();
+        set(T2, Path::new(r"C:\Old\ferrimeter.exe"), true).unwrap();
+        assert!(!is_enabled(T2, Path::new(r"C:\New\ferrimeter.exe")));
+        set(T2, Path::new(r"C:\New\ferrimeter.exe"), true).unwrap();
+        assert!(is_enabled(T2, Path::new(r"C:\New\ferrimeter.exe")));
+        set(T2, Path::new(r"C:\New\ferrimeter.exe"), false).unwrap();
     }
 }

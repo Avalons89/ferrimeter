@@ -17,7 +17,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-pub const CLASS_NAME: PCWSTR = w!("netspeed-rs-widget");
+pub const CLASS_NAME: PCWSTR = w!("ferrimeter-widget");
 pub const WM_APP_TRAY: u32 = WM_APP + 1;
 pub const WM_APP_SHOW: u32 = WM_APP + 2;
 const TIMER_ID: usize = 1;
@@ -154,7 +154,7 @@ pub fn create(app: App) -> windows::core::Result<HWND> {
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             CLASS_NAME,
-            w!("netspeed"),
+            w!("Ferrimeter"),
             WS_POPUP,
             0, 0, 1, 1,
             None, None, Some(instance.into()), None,

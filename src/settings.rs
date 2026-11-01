@@ -1,4 +1,4 @@
-//! User settings persisted as JSON under %APPDATA%\netspeed-rs, plus the error log.
+//! User settings persisted as JSON under %APPDATA%\ferrimeter, plus the error log.
 
 use crate::counters::Selection;
 use crate::format::Units;
@@ -55,7 +55,7 @@ impl Default for Settings {
 }
 
 pub fn app_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("netspeed-rs"))
+    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("ferrimeter"))
 }
 
 pub fn settings_path() -> Option<PathBuf> {
@@ -116,7 +116,7 @@ mod tests {
 
     /// A fresh, empty directory unique to one test.
     fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("netspeed-test-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("ferrimeter-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d

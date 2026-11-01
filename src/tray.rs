@@ -108,7 +108,7 @@ pub fn add(hwnd: HWND) {
         nid.uFlags = NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP | if icon.is_some() { NIF_ICON } else { NOTIFY_ICON_DATA_FLAGS(0) };
         nid.uCallbackMessage = WM_APP_TRAY;
         nid.hIcon = icon.unwrap_or_default();
-        copy_tip(&mut nid.szTip, "netspeed");
+        copy_tip(&mut nid.szTip, "Ferrimeter");
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
