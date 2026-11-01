@@ -5,10 +5,10 @@
 //! callers take a `Settings` snapshot or copy the strings out first.
 
 use crate::app::{App, MenuCommand};
-use crate::counters::read_adapters;
+use crate::win::counters_win::read_adapters;
 use crate::format;
 use crate::settings::{log_error, Settings, TextSize, Theme};
-use crate::{autostart, dock, tray};
+use crate::win::{autostart, dock, tray};
 use std::time::Instant;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};

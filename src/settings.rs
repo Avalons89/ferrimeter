@@ -191,6 +191,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn locked_file_is_not_overwritten() {
         use std::os::windows::fs::OpenOptionsExt;

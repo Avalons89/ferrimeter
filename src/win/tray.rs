@@ -1,11 +1,12 @@
 //! Notification-area icon, tooltip and the shared right-click menu.
 
 use crate::app::MenuCommand;
-use crate::autostart;
-use crate::counters::{menu_adapters, read_adapters, Selection};
+use crate::win::autostart;
+use crate::counters::{menu_adapters, Selection};
+use crate::win::counters_win::read_adapters;
 use crate::format::Units;
 use crate::settings::{Settings, TextSize, Theme};
-use crate::widget::WM_APP_TRAY;
+use crate::win::widget::WM_APP_TRAY;
 use std::cell::Cell;
 use std::sync::OnceLock;
 use windows::core::{w, HSTRING};
