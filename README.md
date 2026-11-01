@@ -48,3 +48,7 @@ as Windows allows (for example after you Alt-Tab).
 8. Unplug/disable selected adapter → tooltip shows fallback.
 9. Task Manager: CPU ~0%, memory < 5 MB.
 10. Resource Monitor / `netstat -b`: netspeed.exe has no network connections.
+11. With two monitors at different scaling (e.g. laptop 150% + external 100%),
+    drag the widget across: it follows the cursor and stays where dropped.
+12. Right-click the tray icon several times: exactly one menu opens each time,
+    at the icon.

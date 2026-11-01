@@ -273,9 +273,9 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 
-fn open_menu(hwnd: HWND) {
+fn open_menu(hwnd: HWND, anchor: Option<(i32, i32)>) {
     if let Some(s) = snapshot(hwnd) {
-        if let Some(cmd) = tray::show_menu(hwnd, &s) {
+        if let Some(cmd) = tray::show_menu(hwnd, &s, anchor) {
             handle_command(hwnd, cmd);
         }
     }
@@ -292,7 +292,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // would open the system menu. Neither belongs on this widget.
             WM_NCLBUTTONDBLCLK => LRESULT(0),
             WM_NCRBUTTONUP | WM_RBUTTONUP => {
-                open_menu(hwnd);
+                open_menu(hwnd, None);
                 LRESULT(0)
             }
             WM_EXITSIZEMOVE => {
@@ -314,7 +314,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
-            WM_DPICHANGED | WM_DISPLAYCHANGE => {
+            WM_DPICHANGED => {
+                // Sent mid-drag when crossing onto a monitor with different
+                // scaling: follow Windows' suggested spot rather than snapping
+                // back to the last saved position.
+                let suggested = *(lparam.0 as *const RECT);
+                with_app(hwnd, |a| {
+                    a.settings.position = Some((suggested.left, suggested.top));
+                    a.save();
+                });
+                if let Some(s) = snapshot(hwnd) {
+                    sync(hwnd, &s);
+                }
+                LRESULT(0)
+            }
+            WM_DISPLAYCHANGE => {
                 if let Some(s) = snapshot(hwnd) {
                     sync(hwnd, &s);
                 }
@@ -333,10 +347,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_APP_TRAY => {
                 // NOTIFYICON_VERSION_4: the event is in LOWORD(lParam).
-                match (lparam.0 & 0xFFFF) as u32 {
-                    WM_LBUTTONDBLCLK => handle_command(hwnd, MenuCommand::ToggleVisible),
-                    WM_CONTEXTMENU | WM_RBUTTONUP => open_menu(hwnd),
-                    _ => {}
+                let event = (lparam.0 & 0xFFFF) as u32;
+                if event == WM_LBUTTONDBLCLK {
+                    handle_command(hwnd, MenuCommand::ToggleVisible);
+                } else if tray::opens_menu(event) {
+                    open_menu(hwnd, Some(tray::anchor_from_wparam(wparam.0)));
                 }
                 LRESULT(0)
             }

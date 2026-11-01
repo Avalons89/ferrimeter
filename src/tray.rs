@@ -2,7 +2,7 @@
 
 use crate::app::MenuCommand;
 use crate::autostart;
-use crate::counters::{qualifies, read_adapters, Selection};
+use crate::counters::{menu_adapters, read_adapters, Selection};
 use crate::format::Units;
 use crate::settings::{Settings, TextSize, Theme};
 use crate::widget::WM_APP_TRAY;
@@ -140,6 +140,21 @@ pub fn is_taskbar_created(msg: u32) -> bool {
     id != 0 && msg == id
 }
 
+/// With NOTIFYICON_VERSION_4 one right-click produces WM_RBUTTONUP and then
+/// WM_CONTEXTMENU; only the latter (also sent for Shift+F10 / the menu key)
+/// opens the menu, so it never opens twice.
+pub fn opens_menu(event: u32) -> bool {
+    event == WM_CONTEXTMENU
+}
+
+/// NOTIFYICON_VERSION_4 passes the anchor point in wParam as two signed
+/// 16-bit screen coordinates (negative on monitors left of/above the primary).
+pub fn anchor_from_wparam(wparam: usize) -> (i32, i32) {
+    let x = (wparam & 0xFFFF) as u16 as i16 as i32;
+    let y = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+    (x, y)
+}
+
 pub fn command_for_id(id: u32, adapter_guids: &[String]) -> Option<MenuCommand> {
     use MenuCommand::*;
     Some(match id {
@@ -180,12 +195,12 @@ unsafe fn submenu(parent: HMENU, label: &str, items: &[(u32, &str, bool)]) {
     let _ = AppendMenuW(parent, MF_POPUP, sub.0 as usize, &HSTRING::from(label));
 }
 
-/// Shows the menu at the cursor and returns the chosen command, if any.
+/// Shows the menu at `anchor` (or the cursor) and returns the chosen command.
 /// Takes a settings snapshot: the menu's modal loop keeps dispatching timer
 /// messages, which mutate the live `App`.
-pub fn show_menu(hwnd: HWND, s: &Settings) -> Option<MenuCommand> {
-    let mut adapters = read_adapters().unwrap_or_default();
-    adapters.sort_by_key(|a| !qualifies(a)); // stable: connected hardware first
+pub fn show_menu(hwnd: HWND, s: &Settings, anchor: Option<(i32, i32)>) -> Option<MenuCommand> {
+    let all = read_adapters().unwrap_or_default();
+    let adapters = menu_adapters(&all);
     let guids: Vec<String> = adapters.iter().map(|a| a.guid.clone()).collect();
     let autostart_on = std::env::current_exe()
         .map(|exe| autostart::is_enabled(autostart::VALUE_NAME, &exe))
@@ -224,7 +239,12 @@ pub fn show_menu(hwnd: HWND, s: &Settings) -> Option<MenuCommand> {
         item(menu, 15, "Exit", false);
 
         let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
+        match anchor {
+            Some((x, y)) => pt = POINT { x, y },
+            None => {
+                let _ = GetCursorPos(&mut pt);
+            }
+        }
         // Documented tray-menu requirement: foreground first, WM_NULL after,
         // or the menu won't close when the user clicks elsewhere.
         let _ = SetForegroundWindow(hwnd);
@@ -241,6 +261,20 @@ mod tests {
     use crate::app::MenuCommand;
     use crate::format::Units;
     use crate::settings::Theme;
+
+    #[test]
+    fn only_context_menu_event_opens_menu() {
+        // NOTIFYICON_VERSION_4 sends WM_RBUTTONUP *and* WM_CONTEXTMENU per right-click.
+        assert!(opens_menu(WM_CONTEXTMENU));
+        assert!(!opens_menu(WM_RBUTTONUP));
+    }
+
+    #[test]
+    fn anchor_decodes_signed_coords() {
+        // x = -100 (monitor left of primary), y = 50
+        let wparam = ((50u32 << 16) | 0xFF9C) as usize;
+        assert_eq!(anchor_from_wparam(wparam), (-100, 50));
+    }
 
     #[test]
     fn ids_map() {

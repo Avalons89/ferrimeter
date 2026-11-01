@@ -62,6 +62,18 @@ pub fn qualifies(a: &AdapterInfo) -> bool {
     a.is_up && a.is_hardware && !a.is_loopback && !a.is_filter
 }
 
+/// Rows worth offering in the Adapter menu: real adapters (even while
+/// disconnected) and connected virtual ones such as VPNs; never filter-driver
+/// or loopback rows, which would only ever show 0. Connected hardware first.
+pub fn menu_adapters(adapters: &[AdapterInfo]) -> Vec<&AdapterInfo> {
+    let mut list: Vec<&AdapterInfo> = adapters
+        .iter()
+        .filter(|a| !a.is_filter && !a.is_loopback && (a.is_hardware || a.is_up))
+        .collect();
+    list.sort_by_key(|a| !qualifies(a)); // stable
+    list
+}
+
 fn counter(a: &AdapterInfo) -> AdapterCounter {
     AdapterCounter { guid: a.guid.clone(), rx: a.in_octets, tx: a.out_octets }
 }
@@ -263,6 +275,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r, (100.0, 0.0));
+    }
+
+    #[test]
+    fn menu_adapters_hides_noise() {
+        let list = [
+            ad("filter", true, true, false, true, 0, 0),
+            ad("loop", true, false, true, false, 0, 0),
+            ad("wan", false, false, false, false, 0, 0),
+            ad("wifi", false, true, false, false, 0, 0),
+            ad("eth", true, true, false, false, 0, 0),
+            ad("vpn", true, false, false, false, 0, 0),
+        ];
+        let got: Vec<&str> = menu_adapters(&list).iter().map(|a| a.guid.as_str()).collect();
+        assert_eq!(got, ["eth", "wifi", "vpn"]);
     }
 
     #[test]
